@@ -1,7 +1,5 @@
 # Пульт — правая колонка dsh: сессии, MCP-серверы и локальные модели
 
-![check](https://github.com/askred-dot-ru/dsh-pult/actions/workflows/check.yml/badge.svg)
-
 Одна колонка правой боковой панели dsh, в которой видно всё, ради чего её
 открывают: какие контексты cfsmcp2 готовы и что сейчас индексируется, загружены
 ли эмбеддинги в локальный LM Studio, живы ли MCP-серверы и контейнеры, и что
@@ -489,6 +487,20 @@ targets:
 серверов — `kind: 'mcp-docker-status'`, `id: '@local/cfsmcp2-contexts'` — поэтому
 сессия, запомнившая вкладку до объединения, открывает её, а не заглушку «Nothing
 here can view this kind of content yet». В справочнике (`guide`) страница одна.
+
+## Разработка
+
+Сборки нет: `client.js` — готовый браузерный бандл, `index.js` — обычный ESM.
+Проверка синтаксиса и рендер превью:
+
+```sh
+npm run check          # node --check index.js && node --check client.js
+npm run preview        # docs/preview.html, docs/preview-sessions.html, docs/preview-models.html
+```
+
+`scripts/preview.mjs` подменяет React заглушкой и вызывает настоящие компоненты
+панели с вымышленными данными, поэтому картинки в README — это реальный рендер
+кода, а не макет. Скриншоты снимаются с получившихся HTML-страниц.
 
 ## Лицензия
 
