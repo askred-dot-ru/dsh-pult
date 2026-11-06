@@ -1,0 +1,62 @@
+{
+  "name": "dsh-pult",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Пульт — правая колонка dsh одним бандлом: каталог контекстов cfsmcp2, загруженные модели LM Studio, MCP-серверы и контейнеры, список сессий с закреплёнными, метками и экспортом за период.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "sidebar",
+    "sessions",
+    "mcp",
+    "lm-studio",
+    "local-llm",
+    "embeddings"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/askred-dot-ru/dsh-pult.git"
+  },
+  "homepage": "https://github.com/askred-dot-ru/dsh-pult#readme",
+  "bugs": {
+    "url": "https://github.com/askred-dot-ru/dsh-pult/issues"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "icon": "./icon.svg",
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "LICENSE",
+    "docs/"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  },
+  "scripts": {
+    "check": "node --check index.js && node --check client.js",
+    "preview": "node scripts/preview.mjs"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24"
+  }
+}

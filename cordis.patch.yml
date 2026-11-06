@@ -1,0 +1,42 @@
+# The dsh-pult bundle patch.
+#
+# One Host row for the whole column. The configuration is the union of what the
+# four parts read; each ignores the keys that are not its own.
+#
+#   pollMs, probe, confirmActions, targets
+#                                   the MCP server/container half
+#   url, contextsTtlMs, contextsTimeoutMs, indexTtlMs, importTimeoutMs
+#                                   the cfsmcp2 catalogue half
+#   lmStudioUrl, lmStudioTimeoutMs  the LM Studio models half
+#   sessionsRoot, exportDir, openExport
+#                                   optional overrides for the sessions export half
+#                                   (defaults: ~/.dsh/sessions, ~/Downloads, open on)
+#   abbreviations                   optional short names for context synonyms
+- insert:
+    - id: pult
+      name: 'dsh-pult'
+      config:
+        # The server/container half. `targets` is empty on purpose: the rows are
+        # your servers, and a shipped list would only probe dead endpoints.
+        # One entry per tracked row — a Docker container, a container that also
+        # speaks MCP, or a native MCP process (no container, nothing to start):
+        #
+        #   - group: MCP servers            # optional, defaults to 'MCP servers' / 'containers'
+        #     container: cfsmcp2-cfsmcp2-1  # Docker name; omit for a native server
+        #     label: cfsmcp2                # what the row says
+        #     server: cfsmcp2               # dsh-mcp-client serverName, omit for a plain container
+        #     url: http://127.0.0.1:8559/mcp/   # endpoint the reachability probe dials
+        #     dataPaths: ['~/.cognee/data'] # optional: report the newest file mtime
+        targets: []
+        pollMs: 5000
+        probe: true
+        confirmActions: false
+        # The cfsmcp2 catalogue half.
+        url: http://127.0.0.1:8559/mcp/
+        contextsTtlMs: 300000
+        contextsTimeoutMs: 8000
+        indexTtlMs: 3000
+        importTimeoutMs: 120000
+        # The LM Studio models half.
+        lmStudioUrl: http://127.0.0.1:1234
+        lmStudioTimeoutMs: 4000
