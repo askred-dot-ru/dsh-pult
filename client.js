@@ -127,7 +127,7 @@ window.__ModuleLoader__.load({
     }
 
     /** The shipped state: everything open, nothing folded, nothing pinned, no comments, no tags. */
-    const UI_DEFAULT = { catalogue: false, sessions: false, models: false, groups: [], buckets: [], pins: [], archived: [], notes: {}, tagGroups: [{ ...DEFAULT_GROUP }], tags: [], sessionTags: {}, filters: { text: '', contexts: [], mine: [] }, newSessionTags: [], pendingNewSession: null, seenDone: {}, turns: {} };
+    const UI_DEFAULT = { catalogue: false, sessions: false, models: false, groups: [], buckets: [], pins: [], archived: [], useCfsmcp2: true, notes: {}, tagGroups: [{ ...DEFAULT_GROUP }], tags: [], sessionTags: {}, filters: { text: '', contexts: [], mine: [] }, newSessionTags: [], pendingNewSession: null, seenDone: {}, turns: {} };
 
     /**
      * A filter as the store keeps it: a search line and two lists of chosen names.
@@ -280,6 +280,7 @@ window.__ModuleLoader__.load({
           buckets: Array.isArray(parsed.buckets) ? parsed.buckets.filter((item) => typeof item === 'string') : [],
           pins: Array.isArray(parsed.pins) ? parsed.pins.filter((item) => typeof item === 'string') : [],
           archived: Array.isArray(parsed.archived) ? parsed.archived.filter((item) => typeof item === 'string') : [],
+          useCfsmcp2: parsed.useCfsmcp2 !== false,
           notes: parsed.notes !== null && typeof parsed.notes === 'object' && !Array.isArray(parsed.notes)
             ? Object.fromEntries(Object.entries(parsed.notes).filter(([, text]) => typeof text === 'string' && text !== ''))
             : {},
@@ -1372,6 +1373,14 @@ window.__ModuleLoader__.load({
         borderRadius: 'var(--dsw-radius-sm, 6px)', background: 'var(--dsw-alias-bg-layer-2)',
       },
       tagManagerHint: { color: 'var(--dsw-alias-label-tertiary)', fontSize: 10, lineHeight: 1.4 },
+      /** One switch inside the settings panel: a tick, its name and its state. */
+      settingRow: {
+        display: 'flex', alignItems: 'center', gap: 6, padding: '2px 4px',
+        borderRadius: 'var(--dsw-radius-sm, 6px)', cursor: 'pointer',
+        color: 'var(--dsw-alias-label-primary)', fontSize: 11,
+      },
+      settingText: { flex: 'auto', minWidth: 0 },
+      settingState: { flex: 'none', color: 'var(--dsw-alias-label-tertiary)', fontSize: 10 },
       /** One group inside the manager: its head, its tags and its own add form. */
       tagGroupBlock: {
         display: 'flex', flexDirection: 'column', gap: 3, padding: '4px 6px 5px',
@@ -1874,13 +1883,20 @@ window.__ModuleLoader__.load({
     function SessionsPanel(props) {
       const given = Array.isArray(props.contexts) ? props.contexts : null;
       const visible = props.visible !== false;
+      // The reader's switch: off means the list never asks cfsmcp2 anything — no
+      // catalogue request, no tag names, no colours, so no dots and no chips either.
+      const useCfsmcp2 = readUi().useCfsmcp2 !== false;
       // A caller that already holds the catalogue passes it; otherwise fetch one.
-      const { state } = useCatalogue(given === null && visible);
+      const { state } = useCatalogue(given === null && visible && useCfsmcp2);
       const fetched = state.data !== null && state.data !== undefined ? state.data : null;
-      const contexts = given !== null ? given : (fetched !== null && Array.isArray(fetched.contexts) ? fetched.contexts : []);
-      const colours = props.tagColours instanceof Map
-        ? props.tagColours
-        : new Map((fetched !== null && Array.isArray(fetched.tags) ? fetched.tags : []).map((tag) => [tag.tag, tag.color]));
+      const contexts = !useCfsmcp2
+        ? []
+        : (given !== null ? given : (fetched !== null && Array.isArray(fetched.contexts) ? fetched.contexts : []));
+      const colours = !useCfsmcp2
+        ? new Map()
+        : (props.tagColours instanceof Map
+          ? props.tagColours
+          : new Map((fetched !== null && Array.isArray(fetched.tags) ? fetched.tags : []).map((tag) => [tag.tag, tag.color])));
       // Tag names for the folder fallback; the Host merges the full REST catalogue,
       // so a tag without contexts of its own (`z`, `vs`) is here too.
       const tagNames = [...colours.keys()];
@@ -2256,6 +2272,17 @@ window.__ModuleLoader__.load({
       };
 
       /** Pin or unpin one Session; a pinned row always lives in «Закреплённые». */
+      /** The reader's cfsmcp2 switch; turning it off also drops its filter chips. */
+      const setUseCfsmcp2 = (next) => {
+        const on = next === true;
+        const filter = readFilter(uiStore.value.filters);
+        uiStore.set({
+          ...uiStore.value,
+          useCfsmcp2: on,
+          filters: on ? filter : { ...filter, contexts: [] },
+        });
+      };
+
       /** Put a Session into «Архив» or bring it back; the pin is left alone. */
       const toggleArchive = (id) => {
         const key = String(id);
@@ -2619,6 +2646,22 @@ window.__ModuleLoader__.load({
           : null,
         !closedSection && managingTags
           ? h('div', { key: 'tag-manager', style: S.tagManager, 'data-tag-manager': 'true' }, [
+            h('label', {
+              key: 'use-cfsmcp2',
+              style: S.settingRow,
+              'data-setting-cfsmcp2': 'true',
+              title: 'Выключите, чтобы список сессий вовсе не читал cfsmcp2: ни точек, ни тегов, ни запросов',
+            }, [
+              h('input', {
+                key: 'box',
+                type: 'checkbox',
+                checked: useCfsmcp2,
+                'data-setting-cfsmcp2-check': 'true',
+                onChange: (event) => setUseCfsmcp2(event.target.checked),
+              }),
+              h('span', { key: 'text', style: S.settingText }, 'применять cfsmcp2'),
+              h('span', { key: 'state', style: S.settingState }, useCfsmcp2 ? 'включено' : 'выключено'),
+            ]),
             h('div', { key: 'hint', style: S.tagManagerHint },
               'Теги живут группами: у каждой свой символ, и он уникален. Нажмите 🏷 в строке сессии, чтобы отметить её.'),
             ...sessionTags.groups.map((group) => h('div', {
@@ -2940,12 +2983,17 @@ window.__ModuleLoader__.load({
                       marginTop: wide ? 1 : 0,
                     },
                   }, look.key === 'running' || look.key === 'done' ? null : look.glyph),
-                  h('span', {
-                    style: {
-                      ...S.dot(colour === null ? 'var(--dsw-alias-label-tertiary)' : colour),
-                      marginTop: wide ? 6 : 0,
-                    },
-                  }),
+                  // The dot is the cfsmcp2 colour of the row's context. With the
+                  // switch off there is no colour to show, so there is no dot: the
+                  // row keeps its status glyph and its own tags only.
+                  colour === null
+                    ? null
+                    : h('span', {
+                      style: {
+                        ...S.dot(colour),
+                        marginTop: wide ? 6 : 0,
+                      },
+                    }),
                   h('span', {
                     style: {
                       ...(wide ? S.sessionTitleWide : S.sessionTitle),
