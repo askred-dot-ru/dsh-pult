@@ -1,17 +1,19 @@
 {
   "name": "dsh-pult",
-  "version": "1.0.0",
+  "version": "1.17.1",
   "private": true,
-  "description": "Пульт — правая колонка dsh одним бандлом: каталог контекстов cfsmcp2, загруженные модели LM Studio, MCP-серверы и контейнеры, список сессий с закреплёнными, метками и экспортом за период.",
+  "description": "Пульт — правая колонка dsh одним бандлом: каталог контекстов cfsmcp2, загруженные модели LM Studio, MCP-серверы и контейнеры, список сессий с закреплёнными, группами тегов, архивом, часами хода и экспортом за период.",
   "keywords": [
     "dsh",
     "dsh-plugin",
     "sidebar",
     "sessions",
+    "session-tags",
     "mcp",
     "lm-studio",
     "local-llm",
-    "embeddings"
+    "embeddings",
+    "archive"
   ],
   "license": "MIT",
   "repository": {

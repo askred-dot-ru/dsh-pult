@@ -1,5 +1,5 @@
 /**
- * dsh-pult — Host half.
+ * mcp-panel — Host half.
  *
  * One bundle for the MCP column of the right sidebar. It carries the two route
  * families the column needs, unchanged, so the Browser half keeps calling the
@@ -17,13 +17,13 @@
 import { connect } from 'node:net';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { appendFile, mkdir, readdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, stat, writeFile } from 'node:fs/promises';
 
 function makeDockerHalf(ctx, config) {
 /**
- * MCP servers half of dsh-pult.
+ * mcp-docker-status — Host half.
  *
  * Owns two authenticated exact Fetch routes:
  *
@@ -47,9 +47,9 @@ function makeDockerHalf(ctx, config) {
  * The browser half (`client.js`) renders the snapshot in the session's right
  * sidebar and posts the actions. That page also declares the
  * `mcp-docker-status.top` seat, which other bundles fill: the cfsmcp2 context
- * catalogue lives there, contributed by dsh-pult itself.
+ * catalogue lives there, contributed by @local/cfsmcp2-contexts.
  *
- * @module dsh-pult
+ * @module @local/mcp-docker-status
  */
 
 
@@ -79,13 +79,23 @@ const ACTION_PATH = '/api/mcp-docker-status/action';
  * row can report when that data last changed: the newest file mtime under them.
  * A path list is optional, and `~` is expanded.
  */
-/**
- * The tracked rows when the row configuration names none. Empty on purpose: a
- * reader's servers are their own, and a shipped list would only probe dead
- * endpoints and paint the section red. List yours under `targets` in the row
- * configuration (or in the plugin card) — the shape is in README.md.
- */
-const DEFAULT_TARGETS = Object.freeze([]);
+const DEFAULT_TARGETS = Object.freeze([
+  { group: 'MCP servers', container: '1c_code_checker', label: '1c-code-check-mcp', server: '1c-code-check-mcp', url: 'http://127.0.0.1:8007/mcp' },
+  { group: 'MCP servers', container: '1c_help_mcp', label: '1c-docs-mcp', server: '1c-docs-mcp', url: 'http://127.0.0.1:8003/mcp' },
+  { group: 'MCP servers', container: '1c_ssl_mcp', label: '1c-ssl-mcp', server: '1c-ssl-mcp', url: 'http://127.0.0.1:8008/mcp' },
+  { group: 'MCP servers', container: '1c_syntaxcheck_mcp', label: '1c-syntax-checker-mcp', server: '1c-syntax-checker-mcp', url: 'http://127.0.0.1:8002/mcp' },
+  { group: 'MCP servers', container: '1c_templates_mcp', label: '1c-templates-mcp', server: '1c-templates-mcp', url: 'http://127.0.0.1:8004/mcp' },
+  { group: 'MCP servers', container: 'cfsmcp2-cfsmcp2-1', label: 'cfsmcp2', server: 'cfsmcp2', url: 'http://127.0.0.1:8559/mcp/' },
+  // Native MCP servers: no container, so only the session link and the probe.
+  // The ingested documents only: cognee also writes a query cache and
+  // session-QA vectors, and counting those would report every recall as an update.
+  { group: 'MCP servers', container: null, label: 'cognee', server: 'cognee', url: 'http://127.0.0.1:8000/mcp', dataPaths: ['~/.cognee/data'] },
+  { group: 'MCP servers', container: null, label: 'openviking', server: 'openviking', url: 'http://127.0.0.1:1933/mcp', dataPaths: ['~/.openviking/data/viking'] },
+  { group: 'ohimymind', container: 'ohimymind-api-1', label: 'ohimymind-api-1', server: null, url: '' },
+  { group: 'ohimymind', container: 'ohimymind-worker-1', label: 'ohimymind-worker-1', server: null, url: '' },
+  { group: 'ohimymind', container: 'ohimymind-embedder-1', label: 'ohimymind-embedder-1', server: null, url: '' },
+  { group: 'ohimymind', container: 'ohimymind-db-1', label: 'ohimymind-db-1', server: null, url: '' },
+]);
 
 /**
  * Docker executables tried in order. A GUI-launched Host inherits a minimal
@@ -547,7 +557,7 @@ function makeCatalogueHalf(ctx, config) {
  * reports a context outside the ready set, so the steady state poll touches no
  * private endpoint except the queue.
  *
- * @module dsh-pult
+ * @module @local/cfsmcp2-contexts
  */
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -738,7 +748,7 @@ async function mcpOpenSession(url, timeoutMs) {
     params: {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: { name: 'dsh-pult', version: '1.0.0' }
+      clientInfo: { name: 'dsh-cfsmcp2-contexts', version: '1.0.0' }
     }
   }, timeoutMs);
   try {
@@ -1232,11 +1242,6 @@ function apply(ctx, config) {
  * silent client-side refusal can be read from a file instead of guessed at.
  * Delete together with the client-side reporter once the panel is green.
  */
-// A Fetch route must start with `/api/`: Connection rejects anything else, which
-// is why this one never registered and the report never reached the file.
-const DIAG_PATH = '/api/dsh-pult/diag';
-const DIAG_FILE = join(tmpdir(), 'dsh-pult-activation.log');
-
 /**
  * sessions-export — Host half.
  *
@@ -1305,7 +1310,8 @@ function makeExportHalf(ctx, config) {
         const rows = Array.isArray(body?.rows) ? body.rows : [];
         const format = body?.format === 'xlsx' ? 'xlsx' : 'json';
         const period = isPlainObject(body?.period) ? body.period : {};
-        const file = await writeExport(exportDir, format, rows, period);
+        const groups = Array.isArray(body?.groups) ? body.groups : [];
+        const file = await writeExport(exportDir, format, rows, period, groups);
         const opened = format === 'xlsx' && openExport ? await openFile(file) : false;
         return json({ ok: true, path: file, opened }, 200);
       } catch (error) {
@@ -1500,10 +1506,24 @@ function durationText(ms) {
 function exportRow(row) {
   const cfsmcp2 = Array.isArray(row?.cfsmcp2) ? row.cfsmcp2.filter((tag) => typeof tag === 'string') : [];
   const tags = Array.isArray(row?.tags) ? row.tags.filter((tag) => typeof tag === 'string') : [];
+  // The reader's tags as their groups see them: `{ id, group, shape, tags }` per
+  // group that has at least one tag on this Session.
+  const groups = Array.isArray(row?.tagGroups)
+    ? row.tagGroups
+      .filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.group === 'string')
+      .map((entry) => ({
+        id: typeof entry.id === 'string' ? entry.id : '',
+        group: entry.group,
+        shape: typeof entry.shape === 'string' ? entry.shape : '',
+        tags: Array.isArray(entry.tags) ? entry.tags.filter((tag) => typeof tag === 'string') : [],
+      }))
+      .filter((entry) => entry.tags.length > 0)
+    : [];
   return {
     session: typeof row?.session === 'string' ? row.session : '',
     cfsmcp2: cfsmcp2.slice(0, 3),
     tags,
+    tagGroups: groups,
     start: Number(row?.start) || 0,
     end: Number(row?.end) || 0,
     activeMs: Number(row?.activeMs) || 0,
@@ -1511,8 +1531,26 @@ function exportRow(row) {
 }
 
 /** Write the export into the downloads folder and answer with its path. */
-async function writeExport(dir, format, rawRows, period) {
+/** The reader's tag groups as the file should show them, in catalogue order. */
+function exportGroups(raw) {
+  return (Array.isArray(raw) ? raw : [])
+    .filter((group) => group !== null && typeof group === 'object' && typeof group.name === 'string' && group.name !== '')
+    .map((group) => ({
+      id: typeof group.id === 'string' ? group.id : '',
+      name: group.name.slice(0, 40),
+      shape: typeof group.shape === 'string' ? group.shape : '',
+    }));
+}
+
+/** The glyph of a shape id, for the column title. */
+const SHAPE_GLYPHS = {
+  circle: '●', star: '★', square: '■', triangle: '▲', diamond: '◆',
+  hexagon: '⬢', cross: '✚', ring: '◯', heart: '♥', flag: '⚑',
+};
+
+async function writeExport(dir, format, rawRows, period, groups) {
   const rows = rawRows.map(exportRow);
+  const tagGroups = exportGroups(groups);
   const from = typeof period?.from === 'string' ? period.from : '';
   const to = typeof period?.to === 'string' ? period.to : '';
   const stamp = from === '' ? 'sessions' : `sessions-${from}${to === '' || to === from ? '' : '_' + to}`;
@@ -1524,12 +1562,18 @@ async function writeExport(dir, format, rawRows, period) {
       period: { from, to },
       generatedAt: new Date().toISOString(),
       total: { activeMs: totalMs, active: durationText(totalMs) },
+      tag_groups: tagGroups.map((group) => ({ group: group.name, shape: group.shape })),
       sessions: rows.map((row) => ({
         session: row.session,
         cfsmcp2_tag_1: row.cfsmcp2[0] ?? '',
         cfsmcp2_tag_2: row.cfsmcp2[1] ?? '',
         cfsmcp2_tag_3: row.cfsmcp2[2] ?? '',
         session_tags: row.tags,
+        tag_groups: row.tagGroups.map((entry) => ({
+          group: entry.group,
+          shape: entry.shape,
+          tags: entry.tags,
+        })),
         started_at: row.start === 0 ? '' : localStamp(row.start),
         ended_at: row.end === 0 ? '' : localStamp(row.end),
         active: durationText(row.activeMs),
@@ -1540,28 +1584,53 @@ async function writeExport(dir, format, rawRows, period) {
     return file;
   }
   const file = join(dir, `${stamp}.xlsx`);
-  await writeFile(file, buildWorkbook(rows, period));
+  await writeFile(file, buildWorkbook(rows, period, tagGroups));
   return file;
 }
 
 /** The sheet columns, in order. */
 const EXPORT_COLUMNS = [
   { key: 'session', title: 'Наименование сессии', width: 46 },
-  { key: 'tag1', title: 'Метка cfsmcp2 1', width: 14 },
-  { key: 'tag2', title: 'Метка cfsmcp2 2', width: 14 },
-  { key: 'tag3', title: 'Метка cfsmcp2 3', width: 14 },
-  { key: 'tags', title: 'Метки сессии', width: 24 },
+  { key: 'tag1', title: 'Тег cfsmcp2 1', width: 14 },
+  { key: 'tag2', title: 'Тег cfsmcp2 2', width: 14 },
+  { key: 'tag3', title: 'Тег cfsmcp2 3', width: 14 },
+  { key: 'tags', title: 'Теги сессии', width: 24 },
   { key: 'start', title: 'Начало работы', width: 18 },
   { key: 'end', title: 'Окончание работы', width: 18 },
   { key: 'hours', title: 'Активное время, ч', width: 16 },
 ];
 
 /**
+ * The sheet's columns for one export: the fixed ones plus one column per tag group
+ * right after «Теги сессии», so a reader sees which group every tag came from
+ * without opening a second list.
+ */
+function exportColumns(groups) {
+  const list = Array.isArray(groups) ? groups : [];
+  if (list.length === 0) return EXPORT_COLUMNS;
+  const at = EXPORT_COLUMNS.findIndex((column) => column.key === 'tags') + 1;
+  const groupColumns = list.map((group, index) => ({
+    key: `group:${index}`,
+    title: `${SHAPE_GLYPHS[group.shape] ?? '●'} ${group.name}`.trim(),
+    width: 20,
+  }));
+  return [...EXPORT_COLUMNS.slice(0, at), ...groupColumns, ...EXPORT_COLUMNS.slice(at)];
+}
+
+/** The tags of one Session that belong to one group, joined for a cell. */
+function groupCell(row, group) {
+  const entry = row.tagGroups.find((item) => (group.id === '' ? item.group === group.name : item.id === group.id));
+  return entry === undefined ? '' : entry.tags.join(', ');
+}
+
+/**
  * A minimal but valid SpreadsheetML workbook: one sheet, a bold header, one row
  * per Session and a bold total row. The package is a stored (uncompressed) zip —
  * Excel reads it, and nothing here needs a third-party library.
  */
-function buildWorkbook(rows, period) {
+function buildWorkbook(rows, period, groups) {
+  const columns = exportColumns(groups);
+  const tagGroups = Array.isArray(groups) ? groups : [];
   const totalMs = rows.reduce((sum, row) => sum + row.activeMs, 0);
   const cell = (ref, value, style) => {
     const styleAttr = style === undefined ? '' : ` s="${style}"`;
@@ -1578,6 +1647,7 @@ function buildWorkbook(rows, period) {
     row.cfsmcp2[1] ?? '',
     row.cfsmcp2[2] ?? '',
     row.tags.join(', '),
+    ...tagGroups.map((group) => groupCell(row, group)),
     row.start === 0 ? '' : localStamp(row.start),
     row.end === 0 ? '' : localStamp(row.end),
     Math.round((row.activeMs / 3600000) * 100) / 100,
@@ -1587,11 +1657,11 @@ function buildWorkbook(rows, period) {
     : '';
   const totalRow = rowXml(rows.length + 2, [
     span === '' ? 'Итого' : `Итого за ${span}`,
-    '', '', '', '', '', '',
+    ...new Array(columns.length - 2).fill(''),
     Math.round((totalMs / 3600000) * 100) / 100,
   ], 1);
   const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><outlinePr summaryBelow="1"/></sheetPr><dimension ref="A1:H${rows.length + 2}"/><cols>${EXPORT_COLUMNS.map((column, index) => `<col min="${index + 1}" max="${index + 1}" width="${column.width}" customWidth="1"/>`).join('')}</cols><sheetData>${rowXml(1, EXPORT_COLUMNS.map((column) => column.title), 1)}${body.join('')}${totalRow}</sheetData></worksheet>`;
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><outlinePr summaryBelow="1"/></sheetPr><dimension ref="A1:${columnName(columns.length - 1)}${rows.length + 2}"/><cols>${columns.map((column, index) => `<col min="${index + 1}" max="${index + 1}" width="${column.width}" customWidth="1"/>`).join('')}</cols><sheetData>${rowXml(1, columns.map((column) => column.title), 1)}${body.join('')}${totalRow}</sheetData></worksheet>`;
   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
   const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -1767,7 +1837,7 @@ function makeModelsHalf(ctx, config) {
 /** The union of the halves' requirements: they all talk to the Host connection. */
 export const inject = ['connection'];
 
-export const name = 'dsh-pult';
+export const name = 'mcp-panel';
 
 /**
  * Register both route families. `config` is the row's configuration, a union of
@@ -1778,22 +1848,22 @@ function start(ctx, config) {
   try {
     makeDockerHalf(ctx, config);
   } catch (error) {
-    ctx.logger?.warn?.('dsh-pult: the MCP server half failed to start', error);
+    ctx.logger?.warn?.('mcp-panel: the MCP server half failed to start', error);
   }
   try {
     makeCatalogueHalf(ctx, config);
   } catch (error) {
-    ctx.logger?.warn?.('dsh-pult: the cfsmcp2 catalogue half failed to start', error);
+    ctx.logger?.warn?.('mcp-panel: the cfsmcp2 catalogue half failed to start', error);
   }
   try {
     makeModelsHalf(ctx, config);
   } catch (error) {
-    ctx.logger?.warn?.('dsh-pult: the LM Studio half failed to start', error);
+    ctx.logger?.warn?.('mcp-panel: the LM Studio half failed to start', error);
   }
   try {
     makeExportHalf(ctx, config);
   } catch (error) {
-    ctx.logger?.warn?.('dsh-pult: the sessions export half failed to start', error);
+    ctx.logger?.warn?.('mcp-panel: the sessions export half failed to start', error);
   }
 }
 
@@ -1803,59 +1873,11 @@ function start(ctx, config) {
  * failure that is confined to this column.
  */
 export function apply(ctx, config) {
-  // A marker of this very start: which routes the running Host actually has. The
-  // browser half can be newer than the Host (a plugin reload re-reads the bundle
-  // but re-runs `apply` from the cached module), and this line tells the two apart.
-  try {
-    void appendFile(
-      DIAG_FILE,
-      `${new Date().toISOString()} host start routes=/api/mcp-docker-status,/api/cfsmcp2-contexts,/api/lmstudio,/api/sessions-activity,/api/sessions-export\n`,
-      'utf8',
-    );
-  } catch {
-    // A missing log file must not break activation.
-  }
-
   try {
     start(ctx, config);
   } catch (error) {
     try {
-      ctx.logger?.warn?.('dsh-pult: activation failed', error);
-    } catch {
-      // Nothing left to report to.
-    }
-  }
-
-  // Diagnostics route, registered last and never allowed to fail activation.
-  try {
-    ctx.connection.fetch.register({
-      path: DIAG_PATH,
-      methods: ['POST'],
-      requestBody: 'buffered',
-      fetch: async (request) => {
-        let payload = null;
-        try {
-          payload = JSON.parse(String(request.body ?? '{}'));
-        } catch {
-          payload = { parseError: true };
-        }
-        const line = `${new Date().toISOString()} ${JSON.stringify(payload)}\n`;
-        try {
-          await appendFile(DIAG_FILE, line, 'utf8');
-        } catch {
-          // A missing log file must not break the report.
-        }
-        try {
-          ctx.logger?.info?.('dsh-pult diag', payload);
-        } catch {
-          // Nothing left to report to.
-        }
-        return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
-      },
-    });
-  } catch (error) {
-    try {
-      ctx.logger?.warn?.('dsh-pult: diagnostics route failed', error);
+      ctx.logger?.warn?.('mcp-panel: activation failed', error);
     } catch {
       // Nothing left to report to.
     }

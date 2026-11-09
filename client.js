@@ -1,5 +1,5 @@
 /**
- * dsh-pult — Client half.
+ * mcp-panel — Client half.
  *
  * One bundle for the whole MCP column of the right sidebar: the cfsmcp2 catalogue
  * at the top, the models loaded in LM Studio under it, the tracked MCP servers and
@@ -37,12 +37,234 @@ window.__ModuleLoader__.load({
      * change. Failures to read or write it are swallowed — a panel without memory is
      * worse than none, but not worth an error over the list.
      */
-    const UI_KEY = 'dsh.pult.v1';
+    const UI_KEY = 'dsh.mcp-panel.v1';
 
-    /** @typedef {{ catalogue: boolean, sessions: boolean, models: boolean, groups: string[], buckets: string[], pins: string[], notes: Record<string, string>, tags: Array<{ id: string, name: string, color: string }>, sessionTags: Record<string, string[]> }} PanelUi */
+    /** @typedef {{ text: string, contexts: string[], mine: string[] }} PanelFilter */
+
+    /** @typedef {{ tags: string[], ids: string[], at: number }} PendingNewSession */
+
+    /** @typedef {{ catalogue: boolean, sessions: boolean, models: boolean, groups: string[], buckets: string[], pins: string[], notes: Record<string, string>, tags: Array<{ id: string, name: string, color: string }>, sessionTags: Record<string, string[]>, filters: PanelFilter }} PanelUi */
+
+    /**
+     * How long a turn has been running, as `M:SS` (and `H:MM:SS` past the hour).
+     * The reader asked for minutes and seconds, so the seconds are always there.
+     */
+    function elapsedText(startedAt, endedAt) {
+      const start = Number(startedAt) || 0;
+      if (start <= 0) return '';
+      const end = Number(endedAt) > 0 ? Number(endedAt) : Date.now();
+      const total = Math.max(0, Math.round((end - start) / 1000));
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const seconds = total % 60;
+      const pad = (value) => String(value).padStart(2, '0');
+      return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${minutes}:${pad(seconds)}`;
+    }
+
+    /**
+     * A next step for a pinned Session the reader has finished but not commented on.
+     *
+     * Three to six words, imperative, drawn from what the row already knows: the
+     * words of its name, its own tags, how long the turn ran. It is advice, not the
+     * reader's own note, so the row draws it faintly and never as a comment.
+     */
+    function suggestNextStep(row) {
+      const title = typeof row?.title === 'string' ? row.title.toLowerCase() : '';
+      const tags = Array.isArray(row?.tags) ? row.tags.map((tag) => String(tag).toLowerCase()) : [];
+      const words = title.split(/[^\p{L}\p{N}]+/u).filter((word) => word !== '');
+      const hits = (list) => list.some((stem) => words.some((word) => word.startsWith(stem)) || tags.some((tag) => tag.includes(stem)));
+      const minutes = Number(row?.elapsedSeconds) > 0 ? Number(row.elapsedSeconds) / 60 : 0;
+      if (hits(['отчёт', 'отчет', 'свод', 'план', 'расчёт', 'расчет', 'выгруз', 'смет'])) return 'сверить итог и снять иголку';
+      if (hits(['письм', 'заявк', 'документ', 'договор', 'акт'])) return 'проверить документы и ответить';
+      if (hits(['ошибк', 'ошиб', 'пада', 'фикс', 'почин', 'баг', 'сбой'])) return 'проверить исправление и закрыть';
+      if (hits(['вопрос', 'уточн', 'согласов', 'обсуди'])) return 'решить вопрос и снять иголку';
+      if (hits(['тест', 'проверк', 'verify'])) return 'проверить результат и снять иголку';
+      if (minutes >= 15) return 'дочитать итог и решить дальше';
+      return 'прочитать итог и снять иголку';
+    }
+
+    /** The colours offered for a new tag, in the order the panel walks them. */
+    const TAG_PALETTE = ['#22c55e', '#f59e0b', '#ec4899', '#3b82f6', '#a855f7', '#ef4444', '#64748b'];
+
+    /** A stable-enough identity for a tag created in the panel; nothing outside reads it. */
+    function newTagId() {
+      return `tag-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    }
+
+    /** The one glyph the archive button wears: a box, and clicking it puts the row away. */
+    const ARCHIVE_GLYPH = '📦';
+
+    /**
+     * The shapes a tag group can wear. One shape belongs to exactly one group: the
+     * symbol is how a reader tells groups apart at a glance on a row, so two groups
+     * sharing one would defeat the point.
+     */
+    const TAG_SHAPES = [
+      { id: 'circle', glyph: '●', name: 'кружок' },
+      { id: 'star', glyph: '★', name: 'звёздочка' },
+      { id: 'square', glyph: '■', name: 'квадрат' },
+      { id: 'triangle', glyph: '▲', name: 'треугольник' },
+      { id: 'diamond', glyph: '◆', name: 'ромб' },
+      { id: 'hexagon', glyph: '⬢', name: 'шестиугольник' },
+      { id: 'cross', glyph: '✚', name: 'крест' },
+      { id: 'ring', glyph: '◯', name: 'кольцо' },
+      { id: 'heart', glyph: '♥', name: 'сердце' },
+      { id: 'flag', glyph: '⚑', name: 'флажок' },
+    ];
+
+    /** The glyph of a shape id, falling back to the first shape. */
+    function shapeGlyph(id) {
+      const found = TAG_SHAPES.find((shape) => shape.id === id);
+      return (found ?? TAG_SHAPES[0]).glyph;
+    }
+
+    /** The group every tag belonged to before groups existed. */
+    const DEFAULT_GROUP = { id: 'group-general', name: 'Общие', shape: 'circle' };
+
+    /** A new group identity, in the same spirit as {@link newTagId}. */
+    function newGroupId() {
+      return `group-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    }
 
     /** The shipped state: everything open, nothing folded, nothing pinned, no comments, no tags. */
-    const UI_DEFAULT = { catalogue: false, sessions: false, models: false, groups: [], buckets: [], pins: [], notes: {}, tags: [], sessionTags: {} };
+    const UI_DEFAULT = { catalogue: false, sessions: false, models: false, groups: [], buckets: [], pins: [], archived: [], notes: {}, tagGroups: [{ ...DEFAULT_GROUP }], tags: [], sessionTags: {}, filters: { text: '', contexts: [], mine: [] }, newSessionTags: [], pendingNewSession: null, seenDone: {}, turns: {} };
+
+    /**
+     * A filter as the store keeps it: a search line and two lists of chosen names.
+     *
+     * The three groups are independent — the search asks about the title, one list
+     * about the cfsmcp2 tags a Session's folder carries, the other about the reader's
+     * own tags — and a Session has to pass all of them to be drawn.
+     */
+    function readFilter(raw) {
+      const value = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+      const names = (list) => (Array.isArray(list) ? list.filter((item) => typeof item === 'string' && item !== '') : []);
+      return {
+        text: typeof value.text === 'string' ? value.text.slice(0, 120) : '',
+        contexts: names(value.contexts),
+        mine: names(value.mine),
+      };
+    }
+
+    /**
+     * The tag choice waiting for a Session the platform is still creating.
+     *
+     * `startSession` returns nothing, so the panel cannot tag the Session at the
+     * moment it is asked for: it records the ids that existed before the click, the
+     * chosen tags and the moment, then tags the first Session that appears after it.
+     * A stale record (older than half a minute) is ignored.
+     */
+    function readPending(raw) {
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+      const tags = Array.isArray(raw.tags) ? raw.tags.filter((id) => typeof id === 'string' && id !== '') : [];
+      const ids = Array.isArray(raw.ids) ? raw.ids.filter((id) => typeof id === 'string' && id !== '') : [];
+      const at = typeof raw.at === 'number' && Number.isFinite(raw.at) ? raw.at : 0;
+      if (tags.length === 0 || at <= 0) return null;
+      return { tags, ids, at };
+    }
+
+    /**
+     * Finished turns the reader has already left.
+     *
+     * The platform keeps `completionUnread` on a Session until the reader opens it,
+     * so an hour after a turn ends the flag still says «новое». The panel therefore
+     * remembers, per Session, the `updatedAt` it had when the reader moved away: a
+     * finished turn with that stamp is read, a newer one is not. The record is small
+     * — ids to a timestamp — and the newest 500 are kept.
+     */
+    function readSeen(raw) {
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {};
+      const entries = Object.entries(raw)
+        .filter(([key, value]) => typeof key === 'string' && key !== '' && typeof value === 'number' && Number.isFinite(value) && value > 0);
+      const kept = entries.slice(-500);
+      return Object.fromEntries(kept);
+    }
+
+    /**
+     * When each Session's last turn started and, once it is over, when it ended.
+     *
+     * The platform publishes «running» and «ready» but not the moment a turn began,
+     * so the panel keeps it: the row then reads «3:41» while the turn lasts and holds
+     * that number after the green check, until the reader has seen it. Nothing here
+     * is a setting — the stamps are pruned with the rest of the store.
+     */
+    function readTurns(raw) {
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return {};
+      const entries = [];
+      for (const [key, value] of Object.entries(raw)) {
+        if (typeof key !== 'string' || key === '') continue;
+        if (value === null || typeof value !== 'object' || Array.isArray(value)) continue;
+        const startedAt = Number(value.startedAt) || 0;
+        if (startedAt <= 0) continue;
+        const endedAt = Number(value.endedAt) || 0;
+        entries.push([key, endedAt > 0 ? { startedAt, endedAt } : { startedAt }]);
+      }
+      return Object.fromEntries(entries.slice(-500));
+    }
+
+    /** How long a recorded tag choice waits for its Session to appear. */
+    const PENDING_MS = 30000;
+
+    /** Whether a filter asks for anything at all. */
+    function filterIsEmpty(filter) {
+      return filter.text.trim() === '' && filter.contexts.length === 0 && filter.mine.length === 0;
+    }
+
+    /**
+     * Whether a Session passes every active group of the filter.
+     *
+     * Inside a group the chosen names are alternatives (any of them is enough); the
+     * groups themselves are cumulative (all of them must pass). An empty group asks
+     * nothing, so an untouched filter lets everything through.
+     */
+    function filterMatches(filter, session) {
+      const text = filter.text.trim().toLowerCase();
+      if (text !== '' && !String(session.title).toLowerCase().includes(text)) return false;
+      if (filter.contexts.length > 0) {
+        const has = session.contextTags.some((tag) => filter.contexts.includes(tag));
+        if (!has) return false;
+      }
+      if (filter.mine.length > 0) {
+        const has = session.mine.some((id) => filter.mine.includes(id));
+        if (!has) return false;
+      }
+      return true;
+    }
+
+    /**
+     * The tag groups as the store keeps them.
+     *
+     * A group is a name and a shape; a shape may be taken by one group only, so a
+     * duplicate falls back to the first free one. Groups are ordered: the reader's
+     * order is the order of the manager and of the filter chips.
+     */
+    function readGroups(raw) {
+      const used = new Set();
+      const list = Array.isArray(raw) ? raw : [];
+      const groups = [];
+      for (const entry of list) {
+        if (entry === null || typeof entry !== 'object') continue;
+        const id = typeof entry.id === 'string' && entry.id !== '' ? entry.id : newGroupId();
+        if (groups.some((group) => group.id === id)) continue;
+        const name = typeof entry.name === 'string' && entry.name.trim() !== '' ? entry.name.trim().slice(0, 40) : '';
+        const wanted = TAG_SHAPES.find((shape) => shape.id === entry.shape);
+        const free = TAG_SHAPES.find((shape) => !used.has(shape.id));
+        const shape = wanted !== undefined && !used.has(wanted.id) ? wanted.id : (free?.id ?? 'circle');
+        used.add(shape);
+        groups.push({ id, name, shape });
+      }
+      if (groups.length === 0) {
+        used.add(DEFAULT_GROUP.shape);
+        groups.push({ ...DEFAULT_GROUP });
+      }
+      return groups;
+    }
+
+    /** One free shape for a new group, or null when every shape is taken. */
+    function freeShape(groups) {
+      const used = new Set(groups.map((group) => group.shape));
+      return TAG_SHAPES.find((shape) => !used.has(shape.id)) ?? null;
+    }
 
     function readUi() {
       try {
@@ -57,11 +279,15 @@ window.__ModuleLoader__.load({
           groups: Array.isArray(parsed.groups) ? parsed.groups.filter((item) => typeof item === 'string') : [],
           buckets: Array.isArray(parsed.buckets) ? parsed.buckets.filter((item) => typeof item === 'string') : [],
           pins: Array.isArray(parsed.pins) ? parsed.pins.filter((item) => typeof item === 'string') : [],
+          archived: Array.isArray(parsed.archived) ? parsed.archived.filter((item) => typeof item === 'string') : [],
           notes: parsed.notes !== null && typeof parsed.notes === 'object' && !Array.isArray(parsed.notes)
             ? Object.fromEntries(Object.entries(parsed.notes).filter(([, text]) => typeof text === 'string' && text !== ''))
             : {},
+          tagGroups: readGroups(parsed.tagGroups),
           tags: Array.isArray(parsed.tags)
-            ? parsed.tags
+            ? [...new Map(parsed.tags
+              .filter((tag) => tag !== null && typeof tag === 'object' && typeof tag.id === 'string' && tag.id !== '')
+              .map((tag) => [tag.id, tag])).values()]
               .filter((tag) => tag !== null && typeof tag === 'object'
                 && typeof tag.id === 'string' && tag.id !== ''
                 && typeof tag.name === 'string' && tag.name.trim() !== '')
@@ -69,8 +295,20 @@ window.__ModuleLoader__.load({
                 id: tag.id,
                 name: tag.name.trim().slice(0, 40),
                 color: /^#[0-9a-f]{6}$/i.test(String(tag.color ?? '')) ? String(tag.color).toLowerCase() : '#64748b',
+                // The groups arrived later than the tags: everything that predates
+                // them belongs to «Общие» with the circle.
+                groupId: typeof tag.groupId === 'string' && tag.groupId !== '' ? tag.groupId : '',
               }))
             : [],
+          filters: readFilter(parsed.filters),
+          // The tags ticked the last time the reader created a Session: the dialog
+          // opens with them pre-ticked, which is the whole point of remembering.
+          newSessionTags: Array.isArray(parsed.newSessionTags)
+            ? parsed.newSessionTags.filter((id) => typeof id === 'string' && id !== '')
+            : [],
+          pendingNewSession: readPending(parsed.pendingNewSession),
+          seenDone: readSeen(parsed.seenDone),
+          turns: readTurns(parsed.turns),
           sessionTags: parsed.sessionTags !== null && typeof parsed.sessionTags === 'object' && !Array.isArray(parsed.sessionTags)
             ? Object.fromEntries(Object.entries(parsed.sessionTags)
               .filter(([, ids]) => Array.isArray(ids))
@@ -151,12 +389,10 @@ window.__ModuleLoader__.load({
       return { from: iso(first), to: iso(last) };
     }
 
-    /** The colours offered for a new tag, in the order the panel walks them. */
-    const TAG_PALETTE = ['#22c55e', '#f59e0b', '#ec4899', '#3b82f6', '#a855f7', '#ef4444', '#64748b'];
-
-    /** A stable-enough identity for a tag created in the panel; nothing outside reads it. */
-    function newTagId() {
-      return `tag-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    /** The first shape no group wears, or null when the palette is exhausted. */
+    function freeShapeOf(groups) {
+      const used = new Set((Array.isArray(groups) ? groups : []).map((group) => group.shape));
+      return TAG_SHAPES.find((shape) => !used.has(shape.id)) ?? null;
     }
 
     /**
@@ -167,28 +403,51 @@ window.__ModuleLoader__.load({
      */
     function usePanelTags() {
       const ui = useUiStore();
-      const tags = Array.isArray(ui.tags) ? ui.tags : [];
+      const rawTags = Array.isArray(ui.tags) ? ui.tags : [];
+      const groups = readGroups(ui.tagGroups);
+      // A tag whose group is gone (or never had one) belongs to the first group.
+      const fallbackGroup = groups[0].id;
+      const tags = rawTags.map((tag) => ({
+        ...tag,
+        groupId: groups.some((group) => group.id === tag.groupId) ? tag.groupId : fallbackGroup,
+      }));
       const assignments = ui.sessionTags !== null && typeof ui.sessionTags === 'object' && !Array.isArray(ui.sessionTags)
         ? ui.sessionTags
         : {};
+      // Every write starts from the live store, never from the render-time snapshot:
+      // two adds in a row would otherwise each start from the older array and the
+      // second would drop the first.
       const write = (next) => uiStore.set({ ...uiStore.value, ...next });
+      const liveTags = () => {
+        const current = Array.isArray(uiStore.value.tags) ? uiStore.value.tags : [];
+        return current.map((tag) => ({
+          ...tag,
+          groupId: readGroups(uiStore.value.tagGroups).some((group) => group.id === tag.groupId)
+            ? tag.groupId
+            : readGroups(uiStore.value.tagGroups)[0].id,
+        }));
+      };
+      const liveGroups = () => readGroups(uiStore.value.tagGroups);
       const ids = (sessionId) => {
         const list = assignments[String(sessionId)];
         return Array.isArray(list) ? list : [];
       };
-      const create = (name, color) => {
+      const create = (name, color, groupId) => {
         const clean = typeof name === 'string' ? name.trim().slice(0, 40) : '';
         if (clean === '') return;
-        const exists = tags.some((tag) => tag.name.toLowerCase() === clean.toLowerCase());
-        if (exists) return;
-        write({ tags: [...tags, { id: newTagId(), name: clean, color: String(color ?? '#64748b') }] });
+        const current = liveTags();
+        if (current.some((tag) => tag.name.toLowerCase() === clean.toLowerCase())) return;
+        const list = liveGroups();
+        const group = list.some((item) => item.id === groupId) ? groupId : list[0].id;
+        write({ tags: [...current, { id: newTagId(), name: clean, color: String(color ?? '#64748b'), groupId: group }] });
       };
       const update = (id, patch) => {
         write({
-          tags: tags.map((tag) => (tag.id === id ? {
+          tags: liveTags().map((tag) => (tag.id === id ? {
             ...tag,
             ...(typeof patch.name === 'string' && patch.name.trim() !== '' ? { name: patch.name.trim().slice(0, 40) } : null),
             ...(typeof patch.color === 'string' ? { color: patch.color } : null),
+            ...(typeof patch.groupId === 'string' && groups.some((group) => group.id === patch.groupId) ? { groupId: patch.groupId } : null),
           } : tag)),
         });
       };
@@ -198,18 +457,101 @@ window.__ModuleLoader__.load({
           const kept = list.filter((tagId) => tagId !== id);
           if (kept.length > 0) rest[session] = kept;
         }
-        write({ tags: tags.filter((tag) => tag.id !== id), sessionTags: rest });
+        write({ tags: liveTags().filter((tag) => tag.id !== id), sessionTags: rest });
       };
       const toggle = (sessionId, tagId) => {
         const key = String(sessionId);
-        const current = ids(key);
+        const live = uiStore.value.sessionTags !== null && typeof uiStore.value.sessionTags === 'object' && !Array.isArray(uiStore.value.sessionTags)
+          ? uiStore.value.sessionTags
+          : {};
+        const current = Array.isArray(live[key]) ? live[key] : [];
         const next = current.includes(tagId) ? current.filter((id) => id !== tagId) : [...current, tagId];
-        const all = { ...assignments };
+        const all = { ...live };
         if (next.length === 0) delete all[key];
         else all[key] = next;
         write({ sessionTags: all });
       };
-      return { tags, assignments, ids, create, update, remove, toggle };
+      /**
+       * Put a whole set of tags on one Session in a single write. Batch use matters:
+       * two toggles in a row would each start from the render-time assignments and
+       * the second would undo the first.
+       */
+      const assign = (sessionId, tagIds) => {
+        const key = String(sessionId);
+        const clean = [...new Set((Array.isArray(tagIds) ? tagIds : []).filter((id) => typeof id === 'string' && id !== ''))];
+        const live = uiStore.value.sessionTags !== null && typeof uiStore.value.sessionTags === 'object' && !Array.isArray(uiStore.value.sessionTags)
+          ? uiStore.value.sessionTags
+          : {};
+        const all = { ...live };
+        if (clean.length === 0) delete all[key];
+        else all[key] = clean;
+        write({ sessionTags: all });
+      };
+      /** Add a group with the first shape nobody wears; a full palette refuses. */
+      const addGroup = (name, shape) => {
+        const wanted = shape !== undefined && shape !== null ? shape : freeShape(groups)?.id;
+        if (wanted === undefined || wanted === null) return;
+        if (groups.some((group) => group.shape === wanted)) return;
+        const clean = typeof name === 'string' ? name.trim().slice(0, 40) : '';
+        write({
+          tagGroups: [...groups, { id: newGroupId(), name: clean === '' ? `Группа ${groups.length + 1}` : clean, shape: wanted }],
+        });
+      };
+      const updateGroup = (id, patch) => {
+        write({
+          tagGroups: groups.map((group) => {
+            if (group.id !== id) return group;
+            const next = {
+              ...group,
+              ...(typeof patch.name === 'string' && patch.name.trim() !== '' ? { name: patch.name.trim().slice(0, 40) } : null),
+            };
+            // A shape can be worn by one group only: a taken one is refused.
+            if (typeof patch.shape === 'string' && TAG_SHAPES.some((shape) => shape.id === patch.shape)
+              && !groups.some((other) => other.id !== id && other.shape === patch.shape)) {
+              next.shape = patch.shape;
+            }
+            return next;
+          }),
+        });
+      };
+      /** Deleting a group deletes its tags and every assignment of them. */
+      const removeGroup = (id) => {
+        if (groups.length <= 1) return;
+        const doomed = new Set(tags.filter((tag) => tag.groupId === id).map((tag) => tag.id));
+        const rest = {};
+        for (const [session, list] of Object.entries(assignments)) {
+          const kept = list.filter((tagId) => !doomed.has(tagId));
+          if (kept.length > 0) rest[session] = kept;
+        }
+        write({
+          tagGroups: groups.filter((group) => group.id !== id),
+          tags: tags.filter((tag) => tag.groupId !== id),
+          sessionTags: rest,
+        });
+      };
+      const groupOf = (tagId) => groups.find((group) => group.id === (tags.find((tag) => tag.id === tagId)?.groupId));
+      return { tags, groups, assignments, ids, create, update, remove, toggle, assign, addGroup, updateGroup, removeGroup, groupOf };
+    }
+
+    /**
+     * The list filter: the search line and the two sets of chosen tags.
+     *
+     * It lives in the same store as the pins, so it survives a Session switch —
+     * a reader who narrowed the list down keeps the narrowing while moving between
+     * Sessions, and one click clears it.
+     */
+    function usePanelFilter() {
+      const ui = useUiStore();
+      const filter = readFilter(ui.filters);
+      const write = (next) => uiStore.set({ ...uiStore.value, filters: readFilter(next) });
+      const toggle = (list, item) => (list.includes(item) ? list.filter((entry) => entry !== item) : [...list, item]);
+      return {
+        filter,
+        setText: (text) => write({ ...filter, text: typeof text === 'string' ? text : '' }),
+        toggleContext: (tag) => write({ ...filter, contexts: toggle(filter.contexts, String(tag)) }),
+        toggleMine: (id) => write({ ...filter, mine: toggle(filter.mine, String(id)) }),
+        reset: () => write({ text: '', contexts: [], mine: [] }),
+      };
     }
 
     /**
@@ -238,8 +580,8 @@ window.__ModuleLoader__.load({
     const TAB_ID = '@local/cfsmcp2-contexts';
     /** The page kind the guide entry opens. */
     const TAB_KIND = 'cfsmcp2-contexts';
-    const TAB_TITLE = 'Контексты cfsmcp2';
-    const TAB_DESCRIPTION = 'Каталог контекстов cfsmcp2: метки, прогресс индексации и очередь';
+    const TAB_TITLE = 'cfsmcp2 contexts';
+    const TAB_DESCRIPTION = 'The cfsmcp2 search-context catalogue: tags, indexing progress and the queue';
     /**
      * A seat another bundle may declare at the top of its own page. Filling it is
      * optional: it lets this panel also sit above @local/mcp-docker-status's
@@ -770,6 +1112,17 @@ window.__ModuleLoader__.load({
       '@container (max-width: 420px){.cfsp-tag-label{display:none}.cfsp-ctx-tag{display:none}}',
       '.cfsp-tag-button{opacity:.45;filter:grayscale(1);transition:opacity 120ms ease,filter 120ms ease}',
       '.cfsp-tag-button:hover,.cfsp-tag-button:focus-visible{opacity:1;filter:none}',
+      // The archive box reads as a switch: grey and dimmed while the Session still
+      // lives in its own band, lit in the archive colour once it has been put away.
+      '.cfsp-archive-button{color:var(--dsw-alias-label-tertiary);opacity:.4;filter:grayscale(1)}',
+      '.cfsp-archive-button:hover,.cfsp-archive-button:focus-visible{opacity:1;filter:none;color:var(--dsw-alias-label-secondary)}',
+      '.cfsp-archive-button[data-archived="true"]{color:var(--dsw-alias-state-warn-primary);opacity:1;filter:none;text-shadow:0 0 6px currentColor}',
+      // The three little row actions — tags, pin, archive — double under the pointer.
+      // A transform grows the hit box with the glyph, so a click anywhere in the
+      // enlarged icon lands on that icon: size only, never layout, so the row never
+      // jumps. Raised above its neighbours, or they would swallow the extra area.
+      '.cfsp-tag-button,.cfsp-pin,.cfsp-archive-button{transform-origin:center center;transition:transform 110ms ease,opacity 120ms ease,filter 120ms ease}',
+      '.cfsp-tag-button:hover,.cfsp-tag-button:focus-visible,.cfsp-pin:hover,.cfsp-pin:focus-visible,.cfsp-archive-button:hover,.cfsp-archive-button:focus-visible{transform:scale(2);position:relative;z-index:6}',
       '.cfsp-tag-button[data-tagged="true"]{opacity:1;filter:none}',
       // The colour field of the tag manager: a swatch, not a browser default box.
       '.cfsp-tag-color{width:20px;height:20px;padding:0;border:0.5px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;cursor:pointer;overflow:hidden}',
@@ -866,6 +1219,23 @@ window.__ModuleLoader__.load({
         margin: 0, padding: '0 8px 0 32px', border: 'none', background: 'transparent',
         width: '100%', boxSizing: 'border-box', textAlign: 'left', cursor: 'text',
       },
+      /** A month inside «Архив»: quieter than a band head, indented under it. */
+      monthHead: {
+        display: 'flex', alignItems: 'center', gap: 6, width: '100%', boxSizing: 'border-box',
+        padding: '2px 6px 2px 14px', margin: '2px 0 1px',
+        border: 'none', borderRadius: 'var(--dsw-radius-sm, 6px)', background: 'transparent',
+        color: 'var(--dsw-alias-label-tertiary)', font: 'inherit', fontSize: 10, fontWeight: 600,
+        letterSpacing: '0.02em', cursor: 'pointer', textAlign: 'left',
+      },
+      monthChevron: { flex: 'none', width: 9, fontSize: 8, color: 'var(--dsw-alias-label-tertiary)' },
+      monthLabel: { flex: 'none', textTransform: 'none' },
+      /** The recommended next step: the comment's slot, drawn faintly and in italics. */
+      noteSuggestion: {
+        margin: 0, padding: '0 8px 0 32px', border: 'none', background: 'transparent',
+        width: '100%', boxSizing: 'border-box', textAlign: 'left', cursor: 'pointer',
+        fontStyle: 'italic', fontSize: 10.5, lineHeight: '1.35',
+        color: 'var(--dsw-alias-label-tertiary)', opacity: 0.85,
+      },
       /** The same line while it is being written: a two-row field of the same size. */
       noteEdit: {
         margin: 0, padding: '1px 6px', boxSizing: 'border-box', width: '100%', resize: 'none',
@@ -881,6 +1251,120 @@ window.__ModuleLoader__.load({
         color: 'var(--dsw-alias-label-secondary)', cursor: 'pointer', font: 'inherit',
         fontSize: 12, lineHeight: 1,
       },
+      /** The filter block under the session head: search, then the two tag rows. */
+      filterBar: {
+        display: 'flex', flexDirection: 'column', gap: 4, margin: '2px 6px 2px',
+        padding: '6px 8px', border: '0.5px solid var(--dsw-alias-border-l1)',
+        borderRadius: 'var(--dsw-radius-sm, 6px)', background: 'var(--dsw-alias-bg-layer-2)',
+      },
+      filterRow: { display: 'flex', alignItems: 'center', gap: 6 },
+      filterLabel: { flex: 'none', color: 'var(--dsw-alias-label-tertiary)', fontSize: 10 },
+      filterInput: {
+        flex: 'auto', minWidth: 0, height: 26, boxSizing: 'border-box', padding: '0 8px',
+        border: '0.5px solid var(--dsw-alias-border-l2)', borderRadius: 'var(--dsw-radius-sm, 6px)',
+        background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)',
+        font: 'inherit', fontSize: 11,
+      },
+      filterCount: { flex: 'none', color: 'var(--dsw-alias-label-tertiary)', fontSize: 10, whiteSpace: 'nowrap' },
+      filterReset: {
+        flex: 'none', height: 26, padding: '0 8px', boxSizing: 'border-box',
+        border: '0.5px solid var(--dsw-alias-border-l2)', borderRadius: 'var(--dsw-radius-sm, 6px)',
+        background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)',
+        cursor: 'pointer', font: 'inherit', fontSize: 11, lineHeight: 1,
+      },
+      /** The tag-settings button: icon only, but a large and comfortable one. */
+      filterSettings: {
+        flex: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: 32, height: 26, padding: 0, boxSizing: 'border-box',
+        border: '0.5px solid var(--dsw-alias-border-l2)', borderRadius: 'var(--dsw-radius-sm, 6px)',
+        background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)',
+        cursor: 'pointer', font: 'inherit', lineHeight: 1, whiteSpace: 'nowrap',
+      },
+      /** The gear itself: the largest glyph in the row. */
+      filterSettingsGlyph: { flex: 'none', fontSize: 17, lineHeight: 1 },
+      filterChips: { display: 'flex', flexWrap: 'wrap', gap: 3, alignItems: 'center' },
+      /** The filter row that holds a column of tag groups: the label sits on the first line. */
+      filterRowTop: { display: 'flex', alignItems: 'flex-start', gap: 6 },
+      /** One group per line, its name before its chips. */
+      filterGroupBlocks: { display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0, flex: 'auto' },
+      filterGroupBlock: { display: 'flex', alignItems: 'baseline', gap: 4, flexWrap: 'wrap' },
+      /**
+       * The turn's clock, deliberately louder than the date it replaces: a tinted pill
+       * with tabular figures, so a glance down the list finds the live row first.
+       */
+      turnClock: {
+        flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 3,
+        padding: '0 5px', borderRadius: 999,
+        font: '600 12px/16px ui-monospace, SFMono-Regular, Menlo, monospace',
+        fontVariantNumeric: 'tabular-nums', letterSpacing: '0.01em',
+      },
+      turnClockRunning: {
+        color: 'var(--dsw-alias-state-business-primary)',
+        background: 'rgba(74, 158, 255, .14)',
+        border: '0.5px solid rgba(74, 158, 255, .45)',
+      },
+      turnClockDone: {
+        color: 'var(--dsw-alias-state-success-primary)',
+        background: 'rgba(34, 197, 94, .14)',
+        border: '0.5px solid rgba(34, 197, 94, .45)',
+      },
+      /** The group a run of own-tag chips belongs to, inside the filter row. */
+      filterGroupLabel: {
+        display: 'inline-flex', alignItems: 'center', gap: 3, flex: 'none',
+        padding: '0 2px', color: 'var(--dsw-alias-label-tertiary)', fontSize: 9, letterSpacing: '0.02em',
+      },
+      filterGroupShape: { flex: 'none', width: 9, textAlign: 'center', fontSize: 8, lineHeight: '10px' },
+      /** One cfsmcp2 tag or one own tag as a toggle. */
+      filterChip: (colour, active) => ({
+        display: 'inline-flex', alignItems: 'center', gap: 3, flex: 'none',
+        padding: '0 5px', borderRadius: 999, fontSize: 10, lineHeight: '15px',
+        color: 'var(--dsw-alias-label-primary)', cursor: 'pointer', font: 'inherit',
+        border: `0.5px solid ${active ? colour : 'var(--dsw-alias-border-l2)'}`,
+        background: active ? `color-mix(in srgb, ${colour} 20%, transparent)` : 'transparent',
+      }),
+      /** The «new session» dialog: a card over the list, decided before the Session opens. */
+      dialog: {
+        display: 'flex', flexDirection: 'column', gap: 6, margin: '2px 6px 4px',
+        padding: '8px 10px', border: '0.5px solid var(--dsw-alias-border-l2)',
+        borderRadius: 'var(--dsw-radius-sm, 6px)', background: 'var(--dsw-alias-bg-layer-2)',
+        boxShadow: '0 8px 24px rgba(0, 0, 0, .28)',
+      },
+      dialogTitle: { color: 'var(--dsw-alias-label-primary)', fontSize: 12, fontWeight: 600 },
+      dialogHint: { color: 'var(--dsw-alias-label-tertiary)', fontSize: 10, lineHeight: 1.4 },
+      dialogList: { display: 'flex', flexDirection: 'column', gap: 2, minHeight: 0 },
+      /** The dialog's tag area: groups stand as columns side by side. */
+      dialogColumns: { display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: 10 },
+      /** One group's column: its name, then its tags stacked. */
+      dialogColumn: {
+        display: 'flex', flexDirection: 'column', gap: 2,
+        flex: '1 1 104px', minWidth: 96, minHeight: 0,
+      },
+      /** A group's name over its tags in the new-session dialog. */
+      dialogGroupHead: {
+        display: 'flex', alignItems: 'center', gap: 4, margin: '0 0 2px', padding: '0 4px',
+        color: 'var(--dsw-alias-label-tertiary)', fontSize: 9, letterSpacing: '0.02em',
+        borderBottom: '0.5px solid var(--dsw-alias-border-l1)', paddingBottom: 2,
+      },
+      dialogGroupShape: { flex: 'none', width: 9, textAlign: 'center', fontSize: 8, lineHeight: '10px' },
+      dialogOption: {
+        display: 'flex', alignItems: 'center', gap: 6, padding: '2px 4px',
+        borderRadius: 'var(--dsw-radius-sm, 6px)', cursor: 'pointer', fontSize: 11,
+        color: 'var(--dsw-alias-label-primary)',
+      },
+      dialogActions: { display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 },
+      dialogPrimary: {
+        flex: 'none', height: 24, padding: '0 10px', boxSizing: 'border-box',
+        border: '0.5px solid var(--dsw-alias-state-business-primary)',
+        borderRadius: 'var(--dsw-radius-sm, 6px)',
+        background: 'color-mix(in srgb, var(--dsw-alias-state-business-primary) 18%, transparent)',
+        color: 'var(--dsw-alias-label-primary)', cursor: 'pointer', font: 'inherit', fontSize: 11, lineHeight: 1,
+      },
+      dialogSecondary: {
+        flex: 'none', height: 24, padding: '0 10px', boxSizing: 'border-box',
+        border: '0.5px solid var(--dsw-alias-border-l2)',
+        borderRadius: 'var(--dsw-radius-sm, 6px)', background: 'var(--dsw-alias-bg-base)',
+        color: 'var(--dsw-alias-label-primary)', cursor: 'pointer', font: 'inherit', fontSize: 11, lineHeight: 1,
+      },
       /** The tag manager block under the session head. */
       tagManager: {
         display: 'flex', flexDirection: 'column', gap: 4, margin: '2px 6px 2px',
@@ -888,6 +1372,29 @@ window.__ModuleLoader__.load({
         borderRadius: 'var(--dsw-radius-sm, 6px)', background: 'var(--dsw-alias-bg-layer-2)',
       },
       tagManagerHint: { color: 'var(--dsw-alias-label-tertiary)', fontSize: 10, lineHeight: 1.4 },
+      /** One group inside the manager: its head, its tags and its own add form. */
+      tagGroupBlock: {
+        display: 'flex', flexDirection: 'column', gap: 3, padding: '4px 6px 5px',
+        border: '0.5px solid var(--dsw-alias-border-l1)', borderRadius: 'var(--dsw-radius-sm, 6px)',
+        background: 'var(--dsw-alias-bg-base)',
+      },
+      /** The shape a group wears: the glyph is the group's identity. */
+      tagGroupShape: {
+        flex: 'none', width: 20, textAlign: 'center', color: 'var(--dsw-alias-label-primary)',
+        fontSize: 14, lineHeight: '20px',
+      },
+      tagGroupName: {
+        flex: 'auto', minWidth: 0, height: 22, boxSizing: 'border-box', padding: '0 6px',
+        border: '0.5px solid var(--dsw-alias-border-l2)', borderRadius: 'var(--dsw-radius-sm, 6px)',
+        background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)',
+        font: 'inherit', fontSize: 11, fontWeight: 600,
+      },
+      tagGroupSelect: {
+        flex: 'none', maxWidth: 132, height: 22, boxSizing: 'border-box', padding: '0 4px',
+        border: '0.5px solid var(--dsw-alias-border-l2)', borderRadius: 'var(--dsw-radius-sm, 6px)',
+        background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-primary)',
+        font: 'inherit', fontSize: 11,
+      },
       tagManageRow: { display: 'flex', alignItems: 'center', gap: 6 },
       tagColor: {
         flex: 'none', width: 20, height: 20, padding: 0, border: 'none',
@@ -923,13 +1430,26 @@ window.__ModuleLoader__.load({
         border: `0.5px solid color-mix(in srgb, ${color} 55%, transparent)`,
         background: `color-mix(in srgb, ${color} 16%, transparent)`,
       }),
-      userTagDot: (color) => ({
-        display: 'inline-block', width: 5, height: 5, borderRadius: '50%', background: color,
+      /**
+       * The group's shape in the tag's colour. The symbol is what tells groups apart
+       * on a row, so it replaces the dot the tags used to carry.
+       */
+      userTagShape: (color) => ({
+        display: 'inline-block', minWidth: 8, textAlign: 'center',
+        fontSize: 8, lineHeight: '10px', color,
       }),
       /** The picker under a row: every known tag as a toggle. */
       tagPick: {
-        display: 'flex', flexWrap: 'wrap', gap: 4, padding: '2px 8px 2px 32px',
+        display: 'flex', flexDirection: 'column', gap: 3, padding: '2px 8px 2px 32px',
       },
+      /** One group inside the picker: its name, then its tags. */
+      tagPickGroup: { display: 'flex', flexDirection: 'column', gap: 3 },
+      tagPickGroupHead: {
+        display: 'flex', alignItems: 'center', gap: 4,
+        color: 'var(--dsw-alias-label-tertiary)', fontSize: 9, letterSpacing: '0.02em',
+      },
+      tagPickGroupShape: { flex: 'none', width: 9, textAlign: 'center', fontSize: 8, lineHeight: '9px' },
+      tagPickChips: { display: 'flex', flexWrap: 'wrap', gap: 4 },
       tagPickEmpty: { color: 'var(--dsw-alias-label-tertiary)', fontSize: 10, padding: '2px 8px 2px 32px' },
       /** One toggle chip of the picker. */
       tagPickChip: (color, active) => ({
@@ -1081,6 +1601,23 @@ window.__ModuleLoader__.load({
     /** The user's own band, above everything: sessions they pinned by hand. */
     const PINNED_GROUP = { key: 'pinned', label: 'Закреплённые' };
 
+    /** The months the archive is filed by: `2026-11`, and «Ноябрь 2026». */
+    const MONTH_NAMES = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
+
+    function monthKeyOf(at) {
+      const date = new Date(Number(at) || 0);
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    function monthLabelOf(at) {
+      const date = new Date(Number(at) || 0);
+      const name = MONTH_NAMES[date.getMonth()] ?? '';
+      return `${name.charAt(0).toUpperCase()}${name.slice(1)} ${date.getFullYear()}`;
+    }
+
+    /** The last band: sessions the reader put away, kept but out of the way. */
+    const ARCHIVE_GROUP = { key: 'archive', label: 'Архив' };
+
     /** The band above the days: sessions that want the reader now. */
     const CURRENT_GROUP = { key: 'current', label: 'На исполнении' };
 
@@ -1097,12 +1634,19 @@ window.__ModuleLoader__.load({
      * Every bucket that has rows is returned; an empty one is left out so the head
      * never sits over nothing.
      */
-    function groupRows(rows, statuses, activeId, pins) {
+    function groupRows(rows, statuses, seen, pins, archived) {
       const pinnedRows = [];
       const live = [];
+      const archivedRows = [];
       const byBucket = new Map();
       for (const row of rows) {
-        const look = rowLook(statuses, row.id, activeId);
+        // «В архив» is the reader's own word, so it outranks every derived band — a
+        // working or pinned Session that was put away stays away until returned.
+        if (archived !== null && archived !== undefined && archived.has(String(row.id))) {
+          archivedRows.push(row);
+          continue;
+        }
+        const look = rowLook(statuses, row.id, row.summary, seen);
         // Work in progress outranks the pin: a pinned Session the AI is running moves
         // to «На исполнении» so the turn is visible, and returns to «Закреплённые» the moment
         // it ends. The pin itself is never touched.
@@ -1134,6 +1678,24 @@ window.__ModuleLoader__.load({
         ...DAY_GROUPS
           .map((group) => ({ ...group, rows: byBucket.get(group.key) ?? [] }))
           .filter((group) => group.rows.length > 0),
+        ...(archivedRows.length === 0 ? [] : [{
+          ...ARCHIVE_GROUP,
+          rows: archivedRows.sort(newest),
+          // The archive is filed by month, newest month first; each month is its own
+          // fold, so a reader opens one month instead of scrolling a year.
+          months: (() => {
+            const byMonth = new Map();
+            for (const row of archivedRows) {
+              const key = monthKeyOf(Number(row.summary.updatedAt));
+              const list = byMonth.get(key) ?? [];
+              list.push(row);
+              byMonth.set(key, list);
+            }
+            return [...byMonth.entries()]
+              .sort((left, right) => (left[0] < right[0] ? 1 : left[0] > right[0] ? -1 : 0))
+              .map(([key, rows]) => ({ key, label: monthLabelOf(Number(rows[0].summary.updatedAt)), rows }));
+          })(),
+        }]),
       ];
     }
 
@@ -1161,14 +1723,26 @@ window.__ModuleLoader__.load({
      */
     const ACCESS_TONE = {
       'read-only': 'color-mix(in srgb, var(--dsw-alias-state-success-primary) 78%, var(--dsw-alias-label-primary))',
+      // The ordinary mode keeps the plain colour, so the list stays calm.
+      'workspace-write': null,
       'danger-full-access': 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 78%, var(--dsw-alias-label-primary))',
     };
+
+    /**
+     * Anything else the deployment names — the derived `custom`, an installation's
+     * own preset (a fourth entry on some builds), a name we have never seen. It is
+     * not «safe» and not «dangerous» but unknown, so it wears the amber: visible
+     * enough to notice, quiet enough not to shout. The tooltip always carries the
+     * raw name, so an unfamiliar variant still identifies itself.
+     */
+    const ACCESS_OTHER_TONE = 'color-mix(in srgb, var(--dsw-alias-state-warn-primary) 70%, var(--dsw-alias-label-primary))';
 
     /** What the tooltip calls each access mode. */
     const ACCESS_LABEL = {
       'read-only': 'только чтение',
       'workspace-write': 'запись в рабочей папке',
       'danger-full-access': 'полный доступ',
+      custom: 'набор настроен вручную',
     };
 
     /**
@@ -1204,11 +1778,16 @@ window.__ModuleLoader__.load({
      * ignored for the Session the main view is showing. A question and a running
      * turn still count: those want the reader even when they are right here.
      */
-    function rowLook(statuses, id, activeId) {
+    function rowLook(statuses, id, summary, seen) {
       const look = sessionLook(statuses, id);
       if (look !== SESSION_LOOK.done) return look;
-      if (activeId === undefined || activeId === null) return look;
-      return String(activeId) === String(id) ? SESSION_LOOK.idle : look;
+      // A finished turn keeps its sign and its place in «На исполнении» until the
+      // reader leaves that Session: the sign is what says «здесь есть ответ».
+      // Leaving it is what marks it read — see the watcher in the panel.
+      const seenAt = seen !== null && typeof seen === 'object' ? Number(seen[String(id)]) || 0 : 0;
+      if (seenAt <= 0) return look;
+      const at = Number(summary?.updatedAt) || 0;
+      return at > seenAt ? look : SESSION_LOOK.idle;
     }
 
     /**
@@ -1217,10 +1796,10 @@ window.__ModuleLoader__.load({
      * Two passes, because a portfolio folder is not a context:
      *
      *   1. a context whose name is a whole path segment — the longest name wins,
-     *      so `shop_a` beats `shop`; its own tags become the row's chips;
+     *      so `p1_A` beats `p1`; its own tags become the row's chips;
      *   2. no context matched — a tag whose name is a whole path segment, the
-     *      deepest one, so `/Users/alex/work/tmp` is labelled `work` and
-     *      `/Users/alex/src/print` is labelled `print`.
+     *      deepest one, so `<portfolio>/p/temp` is labelled `p` and
+     *      `<portfolio>/vs/vs0` is labelled `vs`.
      *
      * A Session outside every known name simply has no labels.
      */
@@ -1319,12 +1898,20 @@ window.__ModuleLoader__.load({
       // about the list itself, so it is remembered too — but it is still the
       // reader's, not a Session's.
       const [pins, setPins] = usePanelSet('pins');
+      const [archived, setArchived] = usePanelSet('archived');
+      // Months opened inside «Архив». Not stored: every month starts folded, so the
+      // archive never greets the reader with a year of rows.
+      const [openMonths, setOpenMonths] = React.useState(() => new Set());
       // The reader's own tags: a catalogue in the header, assignment on a row.
       const sessionTags = usePanelTags();
       const [managingTags, setManagingTags] = React.useState(false);
       const [tagging, setTagging] = React.useState(null);
-      const [newTagName, setNewTagName] = React.useState('');
-      const [newTagColor, setNewTagColor] = React.useState(TAG_PALETTE[0]);
+      // One draft per group: adding a tag happens inside a group, so the form is
+      // per group too and two open drafts never fight over one field.
+      const [draftName, setDraftName] = React.useState({});
+      const [draftColor, setDraftColor] = React.useState({});
+      const [newGroupName, setNewGroupName] = React.useState('');
+      const [newGroupShape, setNewGroupShape] = React.useState(null);
       // The export: an on-demand file for a period, the previous month by default.
       const [exportOpen, setExportOpen] = React.useState(false);
       const [exportFrom, setExportFrom] = React.useState(() => previousMonth().from);
@@ -1332,6 +1919,19 @@ window.__ModuleLoader__.load({
       const [exportBusy, setExportBusy] = React.useState(null);
       const [exportStatus, setExportStatus] = React.useState('');
       const tagById = new Map(sessionTags.tags.map((tag) => [tag.id, tag]));
+      // The list filter: a search over names, plus the two tag families, all
+      // cumulative. It stays in the store, so moving to another Session keeps it.
+      const filterState = usePanelFilter();
+      // The tag rows of the filter stay folded behind one button: the search line is
+      // always there, the tag catalogue opens on demand. Remembered like the other
+      // section flags, so a reader who works with tags keeps them open.
+      const [tagsShown, setTagsShown] = usePanelFlag('filterTags');
+      // «Новая сессия» asks which tags the Session gets before it opens. The ticks
+      // start as the ones the reader confirmed last time.
+      const uiSnapshot = useUiStore();
+      const rememberedNewTags = Array.isArray(uiSnapshot.newSessionTags) ? uiSnapshot.newSessionTags : [];
+      const [newDialog, setNewDialog] = React.useState(null);
+      const [newChecked, setNewChecked] = React.useState([]);
       // A pinned row may carry one short comment. The editor replaces the line in
       // place, so writing it never costs a dialog.
       const [notes, setNote] = usePanelNotes();
@@ -1354,6 +1954,24 @@ window.__ModuleLoader__.load({
         return undefined;
       }) ?? (typeof props.sessionId === 'string' && props.sessionId !== '' ? props.sessionId : undefined);
 
+      // Turns the reader has already left: a finished turn with that stamp drops out
+      // of «На исполнении» and returns to its day band.
+      const seenDone = uiSnapshot.seenDone !== null && typeof uiSnapshot.seenDone === 'object' ? uiSnapshot.seenDone : {};
+      const previousActive = React.useRef(undefined);
+      React.useEffect(() => {
+        const previous = previousActive.current;
+        previousActive.current = activeId;
+        if (previous === undefined || previous === null) return;
+        if (activeId !== undefined && String(previous) === String(activeId)) return;
+        // The Session that just lost focus is the one the reader has now read: its
+        // current `updatedAt` becomes the mark. A newer finish will lift it again.
+        const at = Number(list?.byId?.[String(previous)]?.updatedAt) || 0;
+        if (at <= 0) return;
+        const known = uiStore.value.seenDone ?? {};
+        if ((Number(known[String(previous)]) || 0) >= at) return;
+        uiStore.set({ ...uiStore.value, seenDone: { ...known, [String(previous)]: at } });
+      });
+
       const rows = [];
       for (const id of Array.isArray(list.ids) ? list.ids : []) {
         const summary = list.byId === null || list.byId === undefined ? undefined : list.byId[id];
@@ -1365,6 +1983,68 @@ window.__ModuleLoader__.load({
       }
       rows.sort((left, right) => (Number(right.summary.updatedAt) || 0) - (Number(left.summary.updatedAt) || 0));
 
+      // Turn stamps: started when the row first reads «works», frozen the moment it
+      // stops, so the number stays visible under the green check.
+      const turns = uiSnapshot.turns !== null && typeof uiSnapshot.turns === 'object' ? uiSnapshot.turns : {};
+      React.useEffect(() => {
+        const next = { ...(uiStore.value.turns ?? {}) };
+        let changed = false;
+        for (const row of rows) {
+          const look = rowLook(statuses, row.id, row.summary, seenDone);
+          const known = next[String(row.id)];
+          if (look.key === 'running') {
+            if (known === undefined || known === null || Number(known.endedAt) > 0 || Number(known.startedAt) <= 0) {
+              next[String(row.id)] = { startedAt: Date.now() };
+              changed = true;
+            }
+          } else if (known !== undefined && known !== null && Number(known.startedAt) > 0 && !(Number(known.endedAt) > 0)) {
+            // The turn just ended: freeze the number it reached.
+            next[String(row.id)] = { startedAt: Number(known.startedAt), endedAt: Date.now() };
+            changed = true;
+          }
+        }
+        if (changed) uiStore.set({ ...uiStore.value, turns: readTurns(next) });
+      });
+      // One timer for the whole list, alive only while something is actually running.
+      const [tick, setTick] = React.useState(() => Date.now());
+      const anyRunning = rows.some((row) => sessionLook(statuses, row.id) === SESSION_LOOK.running);
+      React.useEffect(() => {
+        if (!anyRunning) return undefined;
+        const timer = setInterval(() => setTick(Date.now()), 1000);
+        return () => clearInterval(timer);
+      }, [anyRunning]);
+
+
+      /**
+       * One row's filterable facts: its name, the cfsmcp2 tags its folder carries
+       * (the same derivation the row draws) and the reader's own tag ids.
+       */
+      const factsOf = (row) => {
+        const label = labelForCwd(row.summary.cwd, contexts, tagNames);
+        const contextTags = label.context !== null && label.context.tags.length > 0
+          ? label.context.tags
+          : (label.tag === null ? [] : [label.tag]);
+        const title = typeof row.summary.title === 'string' && row.summary.title !== ''
+          ? row.summary.title
+          : String(row.id).slice(0, 8);
+        return { title, contextTags, mine: sessionTags.ids(row.id) };
+      };
+      // One pass: the same facts answer the chips, the counter and the filter.
+      const facts = new Map(rows.map((row) => [String(row.id), factsOf(row)]));
+      /** Every cfsmcp2 tag that at least one listed Session carries, with its colour. */
+      const contextChoices = new Map();
+      for (const row of rows) {
+        for (const tag of facts.get(String(row.id)).contextTags) {
+          if (!contextChoices.has(tag)) contextChoices.set(tag, colours.get(tag) ?? 'var(--dsw-alias-label-tertiary)');
+        }
+      }
+      const filter = filterState.filter;
+      // How many tag conditions are in force: the button shows it, so a folded
+      // chip row still explains a shortened list.
+      const pickedTags = filter.contexts.length + filter.mine.length;
+      const filtered = rows.filter((row) => filterMatches(filter, facts.get(String(row.id))));
+      const filterActive = !filterIsEmpty(filter);
+
       const reveal = (id) => {
         try {
           if (platform !== null) platform.uiWorkspace.openSession(id);
@@ -1373,6 +2053,69 @@ window.__ModuleLoader__.load({
           // not worth an error banner over the catalogue.
         }
       };
+
+      /** Open the «new session» dialog with last time's ticks restored. */
+      const openNewSession = () => {
+        const known = new Set(sessionTags.tags.map((tag) => tag.id));
+        setNewChecked(rememberedNewTags.filter((id) => known.has(id)));
+        setNewDialog('open');
+      };
+
+      const closeNewSession = () => {
+        setNewDialog(null);
+        setNewChecked([]);
+      };
+
+      /**
+       * Remember the ticks, ask the platform for a Session and leave a record for the
+       * watcher: `startSession` returns nothing, so the tags are attached to the
+       * first Session that appears after this click.
+       */
+      const createNewSession = () => {
+        const chosen = newChecked.filter((id) => sessionTags.tags.some((tag) => tag.id === id));
+        const knownIds = (Array.isArray(list.ids) ? list.ids : []).map((id) => String(id));
+        uiStore.set({
+          ...uiStore.value,
+          newSessionTags: chosen,
+          pendingNewSession: chosen.length === 0 ? null : { tags: chosen, ids: knownIds, at: Date.now() },
+        });
+        closeNewSession();
+        const start = platform === null || platform === undefined || platform.uiWorkspace === undefined
+          ? undefined
+          : platform.uiWorkspace.startSession;
+        if (typeof start !== 'function') return;
+        try {
+          // No draft: the platform composes a blank Session in the current workspace.
+          start.call(platform.uiWorkspace, undefined);
+        } catch {
+          // ignored on purpose
+        }
+      };
+
+      /**
+       * Give the recorded tags to the Session the platform has just created.
+       *
+       * The panel only learns about a Session through the list feed, so it compares
+       * the ids it knew before the click with the ids it sees now; the newest of the
+       * newcomers is the one that was just asked for.
+       */
+      React.useEffect(() => {
+        const pending = uiStore.value.pendingNewSession;
+        if (pending === null || pending === undefined) return;
+        if (Date.now() - pending.at > PENDING_MS) {
+          uiStore.set({ ...uiStore.value, pendingNewSession: null });
+          return;
+        }
+        const known = new Set(pending.ids);
+        const ids = Array.isArray(list.ids) ? list.ids.map((id) => String(id)) : [];
+        const fresh = ids.filter((id) => !known.has(id));
+        if (fresh.length === 0) return;
+        const newest = fresh
+          .map((id) => ({ id, at: Number(list.byId?.[id]?.updatedAt) || 0 }))
+          .sort((left, right) => right.at - left.at)[0];
+        sessionTags.assign(newest.id, [...new Set([...sessionTags.ids(newest.id), ...pending.tags])]);
+        uiStore.set({ ...uiStore.value, pendingNewSession: null });
+      });
 
       /** Open the comment editor on one row, with the text it already carries. */
       const beginNote = (id, text) => {
@@ -1387,13 +2130,26 @@ window.__ModuleLoader__.load({
         setDraft('');
       };
 
-      /** Add the tag the header form holds and step the palette on. */
-      const addTag = () => {
-        const name = newTagName.trim();
+      /** Add the tag a group's draft holds; the colour steps on for the next one. */
+      const addTag = (groupId) => {
+        const name = (draftName[groupId] ?? '').trim();
         if (name === '') return;
-        sessionTags.create(name, newTagColor);
-        setNewTagName('');
-        setNewTagColor(TAG_PALETTE[(sessionTags.tags.length + 1) % TAG_PALETTE.length]);
+        const color = draftColor[groupId] ?? TAG_PALETTE[sessionTags.tags.length % TAG_PALETTE.length];
+        sessionTags.create(name, color, groupId);
+        setDraftName((previous) => ({ ...previous, [groupId]: '' }));
+        setDraftColor((previous) => ({
+          ...previous,
+          [groupId]: TAG_PALETTE[(sessionTags.tags.length + 1) % TAG_PALETTE.length],
+        }));
+      };
+
+      /** Add the group the bottom form holds; a full palette refuses. */
+      const addGroup = () => {
+        const free = freeShapeOf(sessionTags.groups);
+        if (free === null) return;
+        sessionTags.addGroup(newGroupName, newGroupShape ?? free.id);
+        setNewGroupName('');
+        setNewGroupShape(null);
       };
 
       /** Open or close the tag picker under one row. */
@@ -1424,30 +2180,65 @@ window.__ModuleLoader__.load({
           const activity = await response.json();
           if (activity?.ok !== true) throw new Error(typeof activity?.error === 'string' ? activity.error : 'не удалось прочитать журналы');
           const sessions = Array.isArray(activity.sessions) ? activity.sessions : [];
-          const rows = sessions.map((session) => {
+          /**
+           * The export follows the filter that is on screen: a reader who narrowed the
+           * list to «УПП + мой тег» downloads exactly that. The facts are derived
+           * the same way the rows derive them, so the file and the list agree.
+           */
+          const kept = sessions.filter((session) => {
+            const label = labelForCwd(session.cwd, contexts, tagNames);
+            const contextTags = label.context !== null && label.context.tags.length > 0
+              ? label.context.tags
+              : (label.tag === null ? [] : [label.tag]);
+            const title = typeof session.title === 'string' && session.title !== ''
+              ? session.title
+              : `сессия ${String(session.id).slice(0, 8)}`;
+            return filterMatches(filter, { title, contextTags, mine: sessionTags.ids(session.id) });
+          });
+          const rows = kept.map((session) => {
             const label = labelForCwd(session.cwd, contexts, tagNames);
             const cfsmcp2 = label.context !== null && label.context.tags.length > 0
               ? label.context.tags.slice(0, 3)
               : (label.tag === null ? [] : [label.tag]);
-            const tags = sessionTags.ids(session.id)
+            const mine = sessionTags.ids(session.id)
               .map((tagId) => tagById.get(tagId))
-              .filter((tag) => tag !== undefined)
-              .map((tag) => tag.name);
+              .filter((tag) => tag !== undefined);
+            const tags = mine.map((tag) => tag.name);
+            // The same tags as their groups see them: one entry per group that has
+            // at least one tag on this Session, in the catalogue's order.
+            const tagGroups = sessionTags.groups
+              .map((group) => ({
+                id: group.id,
+                group: group.name,
+                shape: group.shape,
+                tags: mine.filter((tag) => tag.groupId === group.id).map((tag) => tag.name),
+              }))
+              .filter((entry) => entry.tags.length > 0);
             return {
               session: typeof session.title === 'string' && session.title !== '' ? session.title : `сессия ${String(session.id).slice(0, 8)}`,
               cfsmcp2,
               tags,
+              tagGroups,
               start: Number(session.start) || 0,
               end: Number(session.end) || 0,
               activeMs: Number(session.activeMs) || 0,
             };
           });
-          setExportStatus(`сессий: ${rows.length}, пишу файл…`);
+          setExportStatus(filterActive
+            ? `сессий по фильтру: ${rows.length} из ${sessions.length}, пишу файл…`
+            : `сессий: ${rows.length}, пишу файл…`);
           const written = await fetch('api/sessions-export', {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ format, period: { from: exportFrom, to: exportTo }, rows }),
+            body: JSON.stringify({
+              format,
+              period: { from: exportFrom, to: exportTo },
+              rows,
+              // The catalogue order decides the column order; a group with no tags on
+              // any row still gets its column, empty.
+              groups: sessionTags.groups.map((group) => ({ id: group.id, name: group.name, shape: group.shape })),
+            }),
           });
           if (!written.ok) {
             throw new Error(written.status === 404
@@ -1465,6 +2256,17 @@ window.__ModuleLoader__.load({
       };
 
       /** Pin or unpin one Session; a pinned row always lives in «Закреплённые». */
+      /** Put a Session into «Архив» or bring it back; the pin is left alone. */
+      const toggleArchive = (id) => {
+        const key = String(id);
+        setArchived((previous) => {
+          const next = new Set(previous);
+          if (next.has(key)) next.delete(key);
+          else next.add(key);
+          return next;
+        });
+      };
+
       const togglePin = (id) => {
         const key = String(id);
         setPins((previous) => {
@@ -1499,55 +2301,271 @@ window.__ModuleLoader__.load({
             style: S.newSession,
             title: 'Новая сессия',
             'aria-label': 'Новая сессия',
+            'aria-haspopup': 'dialog',
+            'aria-expanded': newDialog === null ? 'false' : 'true',
+            'data-new-session': 'true',
             onClick: (event) => {
               event.preventDefault();
               event.stopPropagation();
-              const start = platform === null || platform === undefined || platform.uiWorkspace === undefined
-                ? undefined
-                : platform.uiWorkspace.startSession;
-              if (typeof start !== 'function') return;
-              try {
-                // No draft: the platform composes a blank Session in the current
-                // workspace. A refusal is not worth an error banner over the list.
-                start.call(platform.uiWorkspace, undefined);
-              } catch {
-                // ignored on purpose
-              }
+              if (newDialog === null) openNewSession();
+              else closeNewSession();
             },
           }, [
             h('span', { key: 'plus', style: S.newSessionPlus, 'aria-hidden': true }, '+'),
             h('span', { key: 'label' }, 'Новая сессия'),
           ]),
-          h('button', {
-            type: 'button',
-            className: 'cfsp-tags',
-            style: S.tagSettings,
-            'data-section': 'session-tags',
-            'aria-expanded': managingTags ? 'true' : 'false',
-            title: managingTags ? 'Скрыть метки сессий' : 'Метки сессий',
-            'aria-label': 'Метки сессий',
-            onClick: (event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              setManagingTags((previous) => !previous);
-            },
-          }, h('span', { 'aria-hidden': true }, '🏷')),
-          h('button', {
-            type: 'button',
-            className: 'cfsp-export',
-            style: S.tagSettings,
-            'data-section': 'session-export',
-            'aria-expanded': exportOpen ? 'true' : 'false',
-            title: 'Экспорт сессий за период',
-            'aria-label': 'Экспорт сессий за период',
-            onClick: (event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              setExportOpen((previous) => !previous);
-              setExportStatus('');
-            },
-          }, h('span', { 'aria-hidden': true }, '⤓')),
         ),
+        !closedSection && newDialog !== null
+          ? h('div', {
+            key: 'new-session',
+            style: S.dialog,
+            role: 'dialog',
+            'aria-label': 'Новая сессия',
+            'data-new-session-dialog': 'true',
+            onKeyDown: (event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                closeNewSession();
+              }
+            },
+          }, [
+            h('div', { key: 'title', style: S.dialogTitle }, 'Новая сессия'),
+            h('div', { key: 'hint', style: S.dialogHint },
+              sessionTags.tags.length === 0
+                ? 'Своих тегов пока нет — сессия создастся без тегов. Завести их можно кнопкой 🏷.'
+                : 'Отметьте теги — они достанутся новой сессии. Выбор запоминается до следующего раза.'),
+            sessionTags.tags.length === 0
+              ? null
+              : h('div', { key: 'list', style: S.dialogColumns, 'data-new-session-columns': 'true' }, sessionTags.groups
+                .filter((group) => sessionTags.tags.some((tag) => tag.groupId === group.id))
+                .map((group) => h('div', {
+                  key: group.id,
+                  style: S.dialogColumn,
+                  'data-new-session-group': group.id,
+                }, [
+                  h('div', { key: 'head', style: S.dialogGroupHead }, [
+                    h('span', { key: 'shape', style: S.dialogGroupShape, 'aria-hidden': true }, shapeGlyph(group.shape)),
+                    h('span', { key: 'name' }, group.name),
+                  ]),
+                  ...sessionTags.tags.filter((tag) => tag.groupId === group.id).map((tag) => {
+                const checked = newChecked.includes(tag.id);
+                return h('label', {
+                  key: tag.id,
+                  style: S.dialogOption,
+                  'data-new-session-tag': tag.id,
+                }, [
+                  h('input', {
+                    key: 'box',
+                    type: 'checkbox',
+                    checked,
+                    'data-new-session-check': tag.id,
+                    onChange: () => {
+                      setNewChecked((previous) => (previous.includes(tag.id)
+                        ? previous.filter((id) => id !== tag.id)
+                        : [...previous, tag.id]));
+                    },
+                  }),
+                  h('span', {
+                    key: 'shape',
+                    style: { display: 'inline-block', minWidth: 10, textAlign: 'center', fontSize: 10, lineHeight: '12px', color: tag.color },
+                    'aria-hidden': true,
+                  }, shapeGlyph(sessionTags.groupOf(tag.id)?.shape ?? 'circle')),
+                  h('span', { key: 'name' }, tag.name),
+                ]);
+                  }),
+                ]))),
+            h('div', { key: 'actions', style: S.dialogActions }, [
+              h('button', {
+                key: 'create',
+                type: 'button',
+                style: S.dialogPrimary,
+                'data-new-session-create': 'true',
+                onClick: (event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  createNewSession();
+                },
+              }, 'Создать'),
+              h('button', {
+                key: 'cancel',
+                type: 'button',
+                style: S.dialogSecondary,
+                'data-new-session-cancel': 'true',
+                onClick: (event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  closeNewSession();
+                },
+              }, 'Отмена'),
+              newChecked.length === 0
+                ? null
+                : h('span', { key: 'picked', style: S.filterCount }, `тегов: ${newChecked.length}`),
+            ]),
+          ])
+          : null,
+        !closedSection
+          ? h('div', { key: 'filter', style: S.filterBar, 'data-session-filter': 'true' }, [
+            h('div', { key: 'search', style: S.filterRow }, [
+              h('input', {
+                key: 'input',
+                type: 'search',
+                style: S.filterInput,
+                value: filter.text,
+                placeholder: 'поиск по наименованию сессий…',
+                'aria-label': 'Поиск по названиям сессий',
+                'data-filter-text': 'true',
+                onChange: (event) => filterState.setText(event.target.value),
+              }),
+              h('span', { key: 'count', style: S.filterCount, 'data-filter-count': `${filtered.length}/${rows.length}` },
+                filterActive ? `${filtered.length} из ${rows.length}` : String(rows.length)),
+              h('button', {
+                key: 'tags',
+                type: 'button',
+                style: {
+                  ...S.filterReset,
+                  ...(tagsShown ? { borderColor: 'var(--dsw-alias-state-business-primary)' } : null),
+                  ...(pickedTags > 0 && !tagsShown ? { color: 'var(--dsw-alias-state-business-primary)' } : null),
+                },
+                'data-filter-tags': 'true',
+                'aria-expanded': tagsShown ? 'true' : 'false',
+                title: tagsShown ? 'Скрыть теги' : 'Показать теги',
+                'aria-label': tagsShown ? 'Скрыть теги' : 'Показать теги',
+                onClick: (event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setTagsShown();
+                },
+              }, pickedTags > 0 ? `🏷 ${pickedTags}` : '🏷'),
+              h('button', {
+                key: 'tag-settings',
+                type: 'button',
+                className: 'cfsp-tags',
+                style: {
+                  ...S.filterSettings,
+                  ...(managingTags ? { borderColor: 'var(--dsw-alias-state-business-primary)' } : null),
+                },
+                'data-section': 'session-tags',
+                'aria-expanded': managingTags ? 'true' : 'false',
+                title: managingTags ? 'Скрыть настройку тегов' : 'Настройка тегов сессий',
+                'aria-label': 'Настройка тегов сессий',
+                onClick: (event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setManagingTags((previous) => !previous);
+                },
+              }, h('span', { key: 'glyph', style: S.filterSettingsGlyph, 'aria-hidden': true }, '⚙')),
+              h('button', {
+                key: 'export',
+                type: 'button',
+                className: 'cfsp-export',
+                style: {
+                  ...S.filterSettings,
+                  ...(exportOpen ? { borderColor: 'var(--dsw-alias-state-business-primary)' } : null),
+                },
+                'data-section': 'session-export',
+                'aria-expanded': exportOpen ? 'true' : 'false',
+                title: 'Скачать выборку: сессии за период в рамках фильтра',
+                'aria-label': 'Скачать выборку за период',
+                onClick: (event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setExportOpen((previous) => !previous);
+                  setExportStatus('');
+                },
+              }, h('span', { key: 'glyph', style: S.filterSettingsGlyph, 'aria-hidden': true }, '⤓')),
+              filterActive
+                ? h('button', {
+                  key: 'reset',
+                  type: 'button',
+                  style: S.filterReset,
+                  'data-filter-reset': 'true',
+                  title: 'Сбросить фильтр',
+                  onClick: (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    filterState.reset();
+                  },
+                }, '×')
+                : null,
+            ]),
+            !tagsShown ? null : h('div', {
+              key: 'tag-groups',
+              style: S.filterGroupBlocks,
+              'data-filter-groups': 'true',
+            }, [
+              // cfsmcp2 is a tag group like the reader's own — always the first one.
+              contextChoices.size === 0
+                ? null
+                : h('div', {
+                  key: 'cfsmcp2',
+                  style: S.filterGroupBlock,
+                  'data-filter-context-group': 'true',
+                }, [
+                  h('span', { key: 'label', style: S.filterGroupLabel, title: 'Группа тегов cfsmcp2' }, [
+                    h('span', { key: 'name' }, 'cfsmcp2'),
+                  ]),
+                  h('div', { key: 'chips', style: S.filterChips }, [...contextChoices.entries()].map(([tag, colour]) => {
+                    const active = filter.contexts.includes(tag);
+                    return h('button', {
+                      key: tag,
+                      type: 'button',
+                      style: S.filterChip(colour, active),
+                      'data-filter-context': tag,
+                      'data-active': active ? 'true' : 'false',
+                      'aria-pressed': active ? 'true' : 'false',
+                      title: active ? `Убрать тег ${tag}` : `Фильтр по тегу ${tag}`,
+                      onClick: (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        filterState.toggleContext(tag);
+                      },
+                    }, [
+                      h('span', { key: 'dot', style: { display: 'inline-block', width: 5, height: 5, borderRadius: '50%', background: colour } }),
+                      h('span', { key: 'name' }, tag),
+                    ]);
+                  })),
+                ]),
+              ...(sessionTags.tags.length === 0 ? [] : sessionTags.groups
+                .filter((group) => sessionTags.tags.some((tag) => tag.groupId === group.id))
+                .map((group) => h('div', {
+                  key: group.id,
+                  style: S.filterGroupBlock,
+                  'data-filter-mine-group': group.id,
+                }, [
+                  h('span', { key: 'label', style: S.filterGroupLabel, title: `Группа тегов ${group.name}` }, [
+                    h('span', { key: 'shape', style: S.filterGroupShape, 'aria-hidden': true }, shapeGlyph(group.shape)),
+                    h('span', { key: 'name' }, group.name),
+                  ]),
+                  h('div', { key: 'chips', style: S.filterChips },
+                    sessionTags.tags.filter((tag) => tag.groupId === group.id).map((tag) => {
+                      const active = filter.mine.includes(tag.id);
+                      return h('button', {
+                        key: tag.id,
+                        type: 'button',
+                        style: S.filterChip(tag.color, active),
+                        'data-filter-mine': tag.id,
+                        'data-active': active ? 'true' : 'false',
+                        'aria-pressed': active ? 'true' : 'false',
+                        title: active ? `Убрать тег ${tag.name}` : `Фильтр по тегу ${tag.name}`,
+                        onClick: (event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          filterState.toggleMine(tag.id);
+                        },
+                      }, [
+                        h('span', {
+                          key: 'shape',
+                          style: S.userTagShape(tag.color),
+                          'aria-hidden': true,
+                        }, shapeGlyph(group.shape)),
+                        h('span', { key: 'name' }, tag.name),
+                      ]);
+                    })),
+                ]))),
+            ]),
+          ])
+          : null,
         !closedSection && exportOpen
           ? h('div', { key: 'export-panel', style: S.tagManager, 'data-export-panel': 'true' },
             h('div', { style: S.tagManagerHint },
@@ -1600,77 +2618,181 @@ window.__ModuleLoader__.load({
           )
           : null,
         !closedSection && managingTags
-          ? h('div', { key: 'tag-manager', style: S.tagManager, 'data-tag-manager': 'true' },
-            h('div', { style: S.tagManagerHint },
-              'Метки задаются здесь и ниоткуда не импортируются. Нажмите 🏷 в строке сессии, чтобы отметить её.'),
-            sessionTags.tags.map((tag) => h('div', { key: tag.id, style: S.tagManageRow, 'data-tag-row': tag.id },
+          ? h('div', { key: 'tag-manager', style: S.tagManager, 'data-tag-manager': 'true' }, [
+            h('div', { key: 'hint', style: S.tagManagerHint },
+              'Теги живут группами: у каждой свой символ, и он уникален. Нажмите 🏷 в строке сессии, чтобы отметить её.'),
+            ...sessionTags.groups.map((group) => h('div', {
+              key: group.id,
+              style: S.tagGroupBlock,
+              'data-tag-group': group.id,
+            }, [
+              h('div', { key: 'head', style: S.tagManageRow }, [
+                h('span', {
+                  key: 'shape',
+                  style: S.tagGroupShape,
+                  title: `Символ группы: ${TAG_SHAPES.find((shape) => shape.id === group.shape)?.name ?? group.shape}`,
+                  'aria-label': `Символ группы ${group.name}`,
+                  'data-tag-group-shape': group.shape,
+                }, shapeGlyph(group.shape)),
+                h('input', {
+                  key: 'name',
+                  style: S.tagGroupName,
+                  defaultValue: group.name,
+                  placeholder: 'название группы',
+                  'aria-label': `Название группы ${group.name}`,
+                  onBlur: (event) => sessionTags.updateGroup(group.id, { name: event.target.value }),
+                  onKeyDown: (event) => {
+                    if (event.key === 'Enter') event.currentTarget.blur();
+                  },
+                }),
+                h('select', {
+                  key: 'shapes',
+                  style: S.tagGroupSelect,
+                  value: group.shape,
+                  'aria-label': `Символ группы ${group.name}`,
+                  'data-tag-group-select': group.id,
+                  onChange: (event) => sessionTags.updateGroup(group.id, { shape: event.target.value }),
+                }, TAG_SHAPES.map((shape) => h('option', {
+                  key: shape.id,
+                  value: shape.id,
+                  // A shape another group wears cannot be picked; the browser hides it.
+                  disabled: sessionTags.groups.some((other) => other.id !== group.id && other.shape === shape.id),
+                }, `${shape.glyph} ${shape.name}`))),
+                sessionTags.groups.length <= 1
+                  ? null
+                  : h('button', {
+                    key: 'drop',
+                    type: 'button',
+                    style: S.tagDelete,
+                    title: 'Удалить группу вместе с её тегами',
+                    'aria-label': `Удалить группу ${group.name}`,
+                    onClick: (event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      sessionTags.removeGroup(group.id);
+                    },
+                  }, '✕'),
+              ]),
+              ...sessionTags.tags.filter((tag) => tag.groupId === group.id).map((tag) => h('div', {
+                key: tag.id,
+                style: S.tagManageRow,
+                'data-tag-row': tag.id,
+              }, [
+                h('input', {
+                  key: 'color',
+                  type: 'color',
+                  className: 'cfsp-tag-color',
+                  style: S.tagColor,
+                  value: tag.color,
+                  'aria-label': `Цвет тега ${tag.name}`,
+                  onChange: (event) => sessionTags.update(tag.id, { color: event.target.value }),
+                }),
+                h('input', {
+                  key: 'name',
+                  style: S.tagName,
+                  defaultValue: tag.name,
+                  'aria-label': `Имя тега ${tag.name}`,
+                  onBlur: (event) => sessionTags.update(tag.id, { name: event.target.value }),
+                  onKeyDown: (event) => {
+                    if (event.key === 'Enter') event.currentTarget.blur();
+                  },
+                }),
+                h('button', {
+                  key: 'drop',
+                  type: 'button',
+                  style: S.tagDelete,
+                  title: 'Удалить тег',
+                  'aria-label': `Удалить тег ${tag.name}`,
+                  onClick: (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    sessionTags.remove(tag.id);
+                  },
+                }, '✕'),
+              ])),
+              h('div', { key: 'add', style: S.tagManageRow }, [
+                h('input', {
+                  key: 'color',
+                  type: 'color',
+                  className: 'cfsp-tag-color',
+                  style: S.tagColor,
+                  value: draftColor[group.id] ?? TAG_PALETTE[0],
+                  'aria-label': `Цвет нового тега группы ${group.name}`,
+                  onChange: (event) => setDraftColor((previous) => ({ ...previous, [group.id]: event.target.value })),
+                }),
+                h('input', {
+                  key: 'name',
+                  style: S.tagName,
+                  placeholder: 'новый тег',
+                  value: draftName[group.id] ?? '',
+                  'aria-label': `Имя нового тега группы ${group.name}`,
+                  'data-tag-add-input': group.id,
+                  onChange: (event) => setDraftName((previous) => ({ ...previous, [group.id]: event.target.value })),
+                  onKeyDown: (event) => {
+                    if (event.key === 'Enter') addTag(group.id);
+                  },
+                }),
+                h('button', {
+                  key: 'add',
+                  type: 'button',
+                  style: S.tagAddButton,
+                  disabled: (draftName[group.id] ?? '').trim() === '',
+                  'data-tag-add': group.id,
+                  onClick: (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    addTag(group.id);
+                  },
+                }, 'Добавить'),
+              ]),
+            ])),
+            h('div', { key: 'new-group', style: S.tagManageRow }, [
+              h('select', {
+                key: 'shape',
+                style: S.tagGroupSelect,
+                value: newGroupShape ?? freeShapeOf(sessionTags.groups)?.id ?? '',
+                'aria-label': 'Символ новой группы',
+                'data-tag-new-group-shape': 'true',
+                onChange: (event) => setNewGroupShape(event.target.value),
+              }, freeShapeOf(sessionTags.groups) === null
+                ? [h('option', { key: 'none', value: '' }, 'все символы заняты')]
+                : TAG_SHAPES.filter((shape) => !sessionTags.groups.some((group) => group.shape === shape.id))
+                  .map((shape) => h('option', { key: shape.id, value: shape.id }, `${shape.glyph} ${shape.name}`))),
               h('input', {
-                type: 'color',
-                className: 'cfsp-tag-color',
-                style: S.tagColor,
-                value: tag.color,
-                'aria-label': `Цвет метки ${tag.name}`,
-                onChange: (event) => sessionTags.update(tag.id, { color: event.target.value }),
-              }),
-              h('input', {
+                key: 'name',
                 style: S.tagName,
-                defaultValue: tag.name,
-                'aria-label': `Имя метки ${tag.name}`,
-                onBlur: (event) => sessionTags.update(tag.id, { name: event.target.value }),
+                placeholder: 'новая группа',
+                value: newGroupName,
+                'aria-label': 'Название новой группы',
+                'data-tag-new-group-name': 'true',
+                onChange: (event) => setNewGroupName(event.target.value),
                 onKeyDown: (event) => {
-                  if (event.key === 'Enter') event.currentTarget.blur();
+                  if (event.key === 'Enter') addGroup();
                 },
               }),
               h('button', {
-                type: 'button',
-                style: S.tagDelete,
-                title: 'Удалить метку',
-                'aria-label': `Удалить метку ${tag.name}`,
-                onClick: (event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  sessionTags.remove(tag.id);
-                },
-              }, '✕'),
-            )),
-            h('div', { style: S.tagManageRow },
-              h('input', {
-                type: 'color',
-                className: 'cfsp-tag-color',
-                style: S.tagColor,
-                value: newTagColor,
-                'aria-label': 'Цвет новой метки',
-                onChange: (event) => setNewTagColor(event.target.value),
-              }),
-              h('input', {
-                style: S.tagName,
-                placeholder: 'новая метка',
-                value: newTagName,
-                'aria-label': 'Имя новой метки',
-                onChange: (event) => setNewTagName(event.target.value),
-                onKeyDown: (event) => {
-                  if (event.key === 'Enter') addTag();
-                },
-              }),
-              h('button', {
+                key: 'add',
                 type: 'button',
                 style: S.tagAddButton,
-                disabled: newTagName.trim() === '',
+                disabled: freeShapeOf(sessionTags.groups) === null,
+                'data-tag-new-group': 'true',
                 onClick: (event) => {
                   event.preventDefault();
                   event.stopPropagation();
-                  addTag();
+                  addGroup();
                 },
-              }, 'Добавить'),
-            ),
-          )
+              }, 'Группа'),
+            ]),
+          ])
           : null,
         closedSection
           ? null
           : rows.length === 0
           ? h('div', { key: 'empty', style: S.note },
             list !== null && list.phase === 'ready' ? 'нет сессий' : 'список сессий недоступен')
-          : h('div', { key: 'list', style: S.sessionList }, groupRows(rows, statuses, activeId, pins).map((group) => {
+          : filtered.length === 0
+          ? h('div', { key: 'empty-filter', style: S.note, 'data-filter-empty': 'true' }, 'ничего не найдено по фильтру')
+          : h('div', { key: 'list', style: S.sessionList }, groupRows(filtered, statuses, seenDone, pins, archived).map((group) => {
             const closed = collapsed.has(group.key);
             return h('div', { key: group.key, style: S.group },
               h('button', {
@@ -1701,8 +2823,44 @@ window.__ModuleLoader__.load({
                 }, group.label),
                 h('span', { key: 'count', style: S.groupCount }, String(group.rows.length)),
               ]),
-              closed ? null : h('div', { key: 'body', style: S.groupBody }, group.rows.map(({ id, summary }) => {
-                const look = rowLook(statuses, id, activeId);
+              closed ? null : h('div', { key: 'body', style: S.groupBody },
+                (group.months === undefined
+                  ? group.rows.map((row) => ({ kind: 'row', row }))
+                  // A folded month contributes its head and nothing else: the rows
+                  // themselves are not built, so a year of archive costs one line per
+                  // month until the reader opens one.
+                  : group.months.flatMap((month) => [
+                    { kind: 'month', month },
+                    ...(openMonths.has(month.key) ? month.rows.map((row) => ({ kind: 'row', row })) : []),
+                  ])).map((item) => {
+                if (item.kind === 'month') {
+                  const opened = openMonths.has(item.month.key);
+                  const count = item.month.rows.length;
+                  return h('button', {
+                    key: `month:${item.month.key}`,
+                    type: 'button',
+                    style: S.monthHead,
+                    'data-archive-month': item.month.key,
+                    'aria-expanded': opened ? 'true' : 'false',
+                    title: opened ? `Свернуть «${item.month.label}»` : `Развернуть «${item.month.label}»`,
+                    onClick: (event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setOpenMonths((previous) => {
+                        const next = new Set(previous);
+                        if (next.has(item.month.key)) next.delete(item.month.key);
+                        else next.add(item.month.key);
+                        return next;
+                      });
+                    },
+                  }, [
+                    h('span', { key: 'chevron', style: S.monthChevron, 'aria-hidden': true }, opened ? '▾' : '▸'),
+                    h('span', { key: 'label', style: S.monthLabel }, item.month.label),
+                    h('span', { key: 'count', style: S.groupCount }, String(count)),
+                  ]);
+                }
+                const { id, summary } = item.row;
+                const look = rowLook(statuses, id, summary, seenDone);
                 const label = labelForCwd(summary.cwd, contexts, tagNames);
                 const context = label.context;
                 const tags = context !== null && context.tags.length > 0
@@ -1714,7 +2872,11 @@ window.__ModuleLoader__.load({
                 // and only in this tooltip once the row is back in its own band.
                 const note = typeof notes[String(id)] === 'string' ? notes[String(id)] : '';
                 const preset = accessPreset(summary);
-                const accessColour = ACCESS_TONE[preset] ?? null;
+                // Known modes keep their tone; «workspace-write» stays plain; every
+                // other named variant — `custom` included — wears the amber.
+                const accessColour = preset === ''
+                  ? null
+                  : (Object.prototype.hasOwnProperty.call(ACCESS_TONE, preset) ? ACCESS_TONE[preset] : ACCESS_OTHER_TONE);
                 const wide = group.key === 'current' || group.key === 'today';
                 // The reader's tags first — they are the point of the row — then the
                 // tags derived from the cwd. Only as many as the row can hold.
@@ -1731,8 +2893,8 @@ window.__ModuleLoader__.load({
                   `cwd: ${typeof summary.cwd === 'string' ? summary.cwd : '—'}`,
                   `${look.label} · ${whenLabel(Number(summary.updatedAt))}`,
                   context === null
-                    ? (label.tag === null ? 'контекст: —' : `метка по папке: ${label.tag}`)
-                    : `контекст: ${context.name}` + (context.tags.length === 0 && label.tag !== null ? ` (метка по папке: ${label.tag})` : ''),
+                    ? (label.tag === null ? 'контекст: —' : `тег по папке: ${label.tag}`)
+                    : `контекст: ${context.name}` + (context.tags.length === 0 && label.tag !== null ? ` (тег по папке: ${label.tag})` : ''),
                   preset === '' ? null : `доступ: ${ACCESS_LABEL[preset] ?? preset}`,
                   note === '' ? null : `комментарий: ${note}`,
                   here ? 'открыта сейчас' : null,
@@ -1800,7 +2962,7 @@ window.__ModuleLoader__.load({
                     tabIndex: 0,
                     style: S.tagCluster,
                     'data-tagged': mine.length === 0 ? 'false' : 'true',
-                    title: mine.length === 0 ? 'Отметить сессию' : `Метки: ${mine.map((tag) => tag.name).join(', ')}`,
+                    title: mine.length === 0 ? 'Отметить сессию' : `Теги: ${mine.map((tag) => tag.name).join(', ')}`,
                     onClick: (event) => {
                       event.preventDefault();
                       event.stopPropagation();
@@ -1814,14 +2976,31 @@ window.__ModuleLoader__.load({
                     },
                   }, [
                     ...shownMine.map((tag) => h('span', { key: tag.id, style: S.userTag(tag.color), title: tag.name }, [
-                      h('span', { key: 'dot', style: S.userTagDot(tag.color) }),
+                      h('span', {
+                        key: 'shape',
+                        style: S.userTagShape(tag.color),
+                        'aria-hidden': true,
+                      }, shapeGlyph(sessionTags.groupOf(tag.id)?.shape ?? 'circle')),
                       h('span', { key: 'label', className: 'cfsp-tag-label' }, tag.name),
                     ])),
                     ...shownContexts.map((tag) => h('span', { key: `ctx-${tag}`, className: 'cfsp-ctx-tag', style: S.sessionTag }, tag)),
                   ]),
                   h('span', {
-                    style: { ...S.sessionWhen, marginTop: wide ? 1 : 0 },
-                  }, whenTime(Number(summary.updatedAt), group.key)),
+                    // The turn's own clock while it runs, and the same number frozen
+                    // under the green check until the reader has seen it. It is drawn
+                    // as a pill so it reads louder than the date it stands in for.
+                    style: look.key === 'running'
+                      ? { ...S.turnClock, ...S.turnClockRunning }
+                      : (look.key === 'done'
+                        ? { ...S.turnClock, ...S.turnClockDone }
+                        : { ...S.sessionWhen, marginTop: wide ? 1 : 0 }),
+                    'data-turn': look.key === 'running' ? 'running' : (look.key === 'done' ? 'done' : undefined),
+                    title: look.key === 'running'
+                      ? `идёт ${elapsedText(turns[String(id)]?.startedAt, tick)}`
+                      : (look.key === 'done' ? `длилось ${elapsedText(turns[String(id)]?.startedAt, turns[String(id)]?.endedAt ?? tick)}` : undefined),
+                  }, look.key === 'running'
+                    ? elapsedText(turns[String(id)]?.startedAt, tick)
+                    : (look.key === 'done' ? elapsedText(turns[String(id)]?.startedAt, turns[String(id)]?.endedAt ?? tick) : whenTime(Number(summary.updatedAt), group.key))),
                   h('button', {
                     key: 'tag-button',
                     type: 'button',
@@ -1829,8 +3008,8 @@ window.__ModuleLoader__.load({
                     'data-tag-button': 'true',
                     'data-tagged': mine.length === 0 ? 'false' : 'true',
                     style: { ...S.tagButton, marginTop: wide ? 1 : 0 },
-                    title: mine.length === 0 ? 'Назначить метку' : `Метки: ${mine.map((tag) => tag.name).join(', ')}`,
-                    'aria-label': mine.length === 0 ? 'Назначить метку' : 'Изменить метки',
+                    title: mine.length === 0 ? 'Назначить тег' : `Теги: ${mine.map((tag) => tag.name).join(', ')}`,
+                    'aria-label': mine.length === 0 ? 'Назначить тег' : 'Изменить теги',
                     onClick: (event) => {
                       event.preventDefault();
                       event.stopPropagation();
@@ -1860,10 +3039,39 @@ window.__ModuleLoader__.load({
                       event.stopPropagation();
                     },
                   }, '📌'),
+                  h('button', {
+                    key: 'archive-button',
+                    type: 'button',
+                    className: 'cfsp-archive-button',
+                    'data-archive-button': String(id),
+                    'data-archived': archived.has(String(id)) ? 'true' : 'false',
+                    style: { ...S.pin, marginTop: wide ? 1 : 0 },
+                    title: archived.has(String(id)) ? 'Вернуть из архива' : 'В архив',
+                    'aria-label': archived.has(String(id)) ? 'Вернуть из архива' : 'В архив',
+                    'aria-pressed': archived.has(String(id)) ? 'true' : 'false',
+                    onClick: (event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      toggleArchive(id);
+                    },
+                    onKeyDown: (event) => {
+                      if (event.key !== 'Enter' && event.key !== ' ') return;
+                      event.stopPropagation();
+                    },
+                  }, ARCHIVE_GLYPH),
                 );
 
                 // The comment: two italic lines under a pinned row, an in-place field
                 // while it is written, and nothing at all once the row leaves the band.
+                // A pinned Session that has just finished and carries no note gets an
+                // advisory next step — faint, italic, never a comment of its own.
+                const suggestion = suggestNextStep({
+                  title,
+                  tags: mine.map((tag) => tag.name),
+                  elapsedSeconds: turns[String(id)] === undefined
+                    ? 0
+                    : ((turns[String(id)].endedAt ?? tick) - (turns[String(id)].startedAt ?? tick)) / 1000,
+                });
                 const noteNode = editingThis
                   ? h('textarea', {
                     key: 'note-edit',
@@ -1913,6 +3121,22 @@ window.__ModuleLoader__.load({
                     },
                     onKeyDown: (event) => event.stopPropagation(),
                   }, note)
+                  : group.key === 'pinned' && look.key === 'done'
+                  ? h('button', {
+                    key: 'note-suggest',
+                    type: 'button',
+                    className: 'cfsp-note cfsp-note-suggest',
+                    style: S.noteSuggestion,
+                    'data-pinned-suggestion': String(id),
+                    title: `Рекомендация (не ваш комментарий): ${suggestion} — нажмите, чтобы взять в комментарий`,
+                    'aria-label': `Рекомендация: ${suggestion}`,
+                    onClick: (event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      beginNote(id, suggestion);
+                    },
+                    onKeyDown: (event) => event.stopPropagation(),
+                  }, `↳ ${suggestion}`)
                   : h('button', {
                     key: 'note-add',
                     type: 'button',
@@ -1936,25 +3160,42 @@ window.__ModuleLoader__.load({
                   style: S.tagPick,
                   'data-tag-pick': 'true',
                 }, sessionTags.tags.length === 0
-                  ? h('span', { key: 'none', style: S.tagPickEmpty }, 'меток нет — создайте их кнопкой «Метки» в шапке')
-                  : sessionTags.tags.map((tag) => {
-                    const active = mine.some((own) => own.id === tag.id);
-                    return h('button', {
-                      key: tag.id,
-                      type: 'button',
-                      style: S.tagPickChip(tag.color, active),
-                      'aria-pressed': active ? 'true' : 'false',
-                      'data-tag-id': tag.id,
-                      onClick: (event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        sessionTags.toggle(id, tag.id);
-                      },
+                  ? h('span', { key: 'none', style: S.tagPickEmpty }, 'тегов нет — создайте их кнопкой «Теги» в шапке')
+                  : sessionTags.groups
+                    .filter((group) => sessionTags.tags.some((tag) => tag.groupId === group.id))
+                    .map((group) => h('div', {
+                      key: group.id,
+                      style: S.tagPickGroup,
+                      'data-tag-pick-group': group.id,
                     }, [
-                      h('span', { key: 'dot', style: S.userTagDot(tag.color) }),
-                      tag.name,
-                    ]);
-                  }));
+                      h('div', { key: 'head', style: S.tagPickGroupHead }, [
+                        h('span', { key: 'shape', style: S.tagPickGroupShape, 'aria-hidden': true }, shapeGlyph(group.shape)),
+                        h('span', { key: 'name' }, group.name),
+                      ]),
+                      h('div', { key: 'chips', style: S.tagPickChips },
+                        sessionTags.tags.filter((tag) => tag.groupId === group.id).map((tag) => {
+                          const active = mine.some((own) => own.id === tag.id);
+                          return h('button', {
+                            key: tag.id,
+                            type: 'button',
+                            style: S.tagPickChip(tag.color, active),
+                            'aria-pressed': active ? 'true' : 'false',
+                            'data-tag-id': tag.id,
+                            onClick: (event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              sessionTags.toggle(id, tag.id);
+                            },
+                          }, [
+                            h('span', {
+                              key: 'shape',
+                              style: S.userTagShape(tag.color),
+                              'aria-hidden': true,
+                            }, shapeGlyph(group.shape)),
+                            tag.name,
+                          ]);
+                        })),
+                    ])));
 
                 return h('div', { key: id, className: 'cfsp-item' }, [
                   row,
@@ -2210,8 +3451,8 @@ window.__ModuleLoader__.load({
     const TAB_ID = '@local/mcp-docker-status';
     /** The page kind the guide entry opens. */
     const TAB_KIND = 'mcp-docker-status';
-    const TAB_TITLE = 'MCP-серверы';
-    const TAB_DESCRIPTION = 'Состояние контейнеров и управление локальными MCP-серверами';
+    const TAB_TITLE = 'MCP servers';
+    const TAB_DESCRIPTION = 'Container state and controls for the local MCP servers';
     /** The seat this page declares at its top, for another bundle to fill. */
     const TOP_SEAT = 'mcp-docker-status.top';
     /** The seat between the catalogue and the container rows: the loaded models. */
@@ -2779,7 +4020,7 @@ window.__ModuleLoader__.load({
         // Between the catalogue and the rows: the models LM Studio has loaded.
         typeof renderSlot === 'function' ? renderSlot(MIDDLE_SEAT, { visible }) : null,
         h('div', { style: S.list }, targets.length === 0
-          ? h('div', { style: S.empty }, state.phase === 'error' ? 'Нет данных от хоста.' : 'Ни один сервер не отслеживается.')
+          ? h('div', { style: S.empty }, state.phase === 'error' ? 'No data from the host.' : 'No targets configured.')
           : nodes),
         // The seat under the rows sits at the foot of the page: the rows keep their
         // own height and the leftover space collects between them, so the session
@@ -2803,8 +4044,8 @@ window.__ModuleLoader__.load({
     // means a Session that remembered the pre-merge page lands on this one.
     const TAB_ID = '@local/mcp-docker-status';
     const TAB_KIND = 'mcp-docker-status';
-    const TAB_TITLE = 'Пульт';
-    const TAB_DESCRIPTION = 'Контексты cfsmcp2, модели LM Studio, MCP-серверы и список сессий';
+    const TAB_TITLE = 'MCP';
+    const TAB_DESCRIPTION = 'cfsmcp2 contexts, the LM Studio models, MCP servers and the Harness session list';
     // The names the page body renders its seats under (kept as they were, so a
     // bundle that filled them before still would).
     const TOP_SEAT = 'mcp-docker-status.top';
@@ -2822,13 +4063,7 @@ window.__ModuleLoader__.load({
           activate(ctx);
         } catch (error) {
           try {
-            console.error('[dsh-pult] activation failed', error);
-            void fetch('api/dsh-pult/diag', {
-              method: 'POST',
-              credentials: 'same-origin',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ fatal: error instanceof Error ? error.message : String(error), version: 2 }),
-            });
+            console.error('[mcp-panel] activation failed', error);
           } catch {
             // Nothing left to report to.
           }
@@ -2846,44 +4081,21 @@ window.__ModuleLoader__.load({
         // Every registration below is guarded on purpose. One refused registration
         // must not fail the whole bundle: the boot reports a failed entry and takes
         // the entire page down with it, while a logged miss leaves the rest working.
-        /** What this activation managed, reported to the Host for diagnosis. */
-        const report = { registered: [], failed: [] };
-        const sendReport = () => {
-          try {
-            void fetch('api/dsh-pult/diag', {
-              method: 'POST',
-              credentials: 'same-origin',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                registered: report.registered,
-                failed: report.failed,
-                panes: typeof document === 'undefined' ? 'no-document' : document.readyState,
-                version: 2,
-              }),
-            });
-          } catch {
-            // Diagnosis must never break the panel.
-          }
-        };
-
         /** Run one registration, reporting a refusal without failing the bundle. */
         const guard = (label, run) => {
           try {
-            const value = run();
-            report.registered.push(label);
-            return value;
+            return run();
           } catch (error) {
             try {
-              console.error(`[dsh-pult] ${label}`, error);
+              console.error(`[mcp-panel] ${label}`, error);
             } catch {
               // Nothing left to report to.
             }
-            report.failed.push(`${label}: ${error instanceof Error ? error.message : String(error)}`);
             return undefined;
           }
         };
 
-        guard('styles', () => ctx.effect(() => SessionsSection.installStyles(), 'dsh-pult: session styles'));
+        guard('styles', () => ctx.effect(() => SessionsSection.installStyles(), 'mcp-panel: session styles'));
 
         guard('tab type', () => ctx.effect(() => ctx.sidebarRightTabs.register({
           id: TAB_ID,
@@ -2895,7 +4107,7 @@ window.__ModuleLoader__.load({
             title: () => TAB_TITLE,
             description: () => TAB_DESCRIPTION,
           }],
-        }), 'dsh-pult: sidebar tab type'));
+        }), 'mcp-panel: sidebar tab type'));
 
         guard('page', () => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
           name: 'sidebar.right.pane.tab',
@@ -2961,9 +4173,7 @@ window.__ModuleLoader__.load({
           return () => {
             if (timer !== null) clearTimeout(timer);
           };
-        }, 'dsh-pult: open the page once per session'));
-
-        sendReport();
+        }, 'mcp-panel: open the page once per session'));
     }
   },
 });

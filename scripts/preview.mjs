@@ -251,12 +251,12 @@ const tagButton = all(sessionTree).find((n) => n.props['data-section'] === 'sess
 tagButton.props.onClick({ preventDefault() {}, stopPropagation() {} });
 const managerTree = redraw(Sessions, sessionProps);
 const doneCluster = all(managerTree)
-  .find((n) => String(n.props.className ?? '').includes('cfsp-tag-cluster') && n.props.title === 'Метки: Идея');
+  .find((n) => String(n.props.className ?? '').includes('cfsp-tag-cluster') && n.props.title === 'Теги: Идея');
 doneCluster.props.onClick({ preventDefault() {}, stopPropagation() {} });
 const pickerTree = redraw(Sessions, sessionProps);
 
 // Close the picker and the tag manager, open the export panel for its frame.
-const pickerCluster = all(pickerTree).find((n) => String(n.props.className ?? '').includes('cfsp-tag-cluster') && n.props.title === 'Метки: Идея');
+const pickerCluster = all(pickerTree).find((n) => String(n.props.className ?? '').includes('cfsp-tag-cluster') && n.props.title === 'Теги: Идея');
 pickerCluster.props.onClick({ preventDefault() {}, stopPropagation() {} });
 const tagButton2 = all(pickerTree).find((n) => n.props['data-section'] === 'session-tags');
 tagButton2.props.onClick({ preventDefault() {}, stopPropagation() {} });
@@ -313,8 +313,8 @@ const sheet = [
   frame('dark', 'Сессии: доступ в цвете заголовка, закреплённые с комментарием', sessionTree),
   frame('light', 'Сессии: светлая тема', sessionTree),
   frame('dark', 'Закреплённая выполняется — ушла в «На исполнении», иголка на месте', pinnedRunningTree),
-  frame('dark', 'Метки: настройка в шапке', managerTree),
-  frame('dark', 'Метки: выбор в строке сессии', pickerTree),
+  frame('dark', 'Теги: настройка в шапке', managerTree),
+  frame('dark', 'Теги: выбор в строке сессии', pickerTree),
   frame('dark', 'Экспорт сессий за период', exportTree),
   frame('dark', 'Сессия на экране завершилась — ушла из «На исполнении»', sessionFinished),
   frame('dark', 'LM Studio: эмбеддинг загружен', modelsReady),
