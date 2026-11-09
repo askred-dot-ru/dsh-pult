@@ -80,17 +80,17 @@ const ACTION_PATH = '/api/mcp-docker-status/action';
  * A path list is optional, and `~` is expanded.
  */
 const DEFAULT_TARGETS = Object.freeze([
-  { group: 'MCP servers', container: '1c_code_checker', label: '1c-code-check-mcp', server: '1c-code-check-mcp', url: 'http://127.0.0.1:8007/mcp' },
-  { group: 'MCP servers', container: '1c_help_mcp', label: '1c-docs-mcp', server: '1c-docs-mcp', url: 'http://127.0.0.1:8003/mcp' },
-  { group: 'MCP servers', container: '1c_ssl_mcp', label: '1c-ssl-mcp', server: '1c-ssl-mcp', url: 'http://127.0.0.1:8008/mcp' },
-  { group: 'MCP servers', container: '1c_syntaxcheck_mcp', label: '1c-syntax-checker-mcp', server: '1c-syntax-checker-mcp', url: 'http://127.0.0.1:8002/mcp' },
-  { group: 'MCP servers', container: '1c_templates_mcp', label: '1c-templates-mcp', server: '1c-templates-mcp', url: 'http://127.0.0.1:8004/mcp' },
-  { group: 'MCP servers', container: 'cfsmcp2-cfsmcp2-1', label: 'cfsmcp2', server: 'cfsmcp2', url: 'http://127.0.0.1:8559/mcp/' },
+  { group: 'Серверы', container: '1c_code_checker', label: '1c-code-check-mcp', server: '1c-code-check-mcp', url: 'http://127.0.0.1:8007/mcp' },
+  { group: 'Серверы', container: '1c_help_mcp', label: '1c-docs-mcp', server: '1c-docs-mcp', url: 'http://127.0.0.1:8003/mcp' },
+  { group: 'Серверы', container: '1c_ssl_mcp', label: '1c-ssl-mcp', server: '1c-ssl-mcp', url: 'http://127.0.0.1:8008/mcp' },
+  { group: 'Серверы', container: '1c_syntaxcheck_mcp', label: '1c-syntax-checker-mcp', server: '1c-syntax-checker-mcp', url: 'http://127.0.0.1:8002/mcp' },
+  { group: 'Серверы', container: '1c_templates_mcp', label: '1c-templates-mcp', server: '1c-templates-mcp', url: 'http://127.0.0.1:8004/mcp' },
+  { group: 'Серверы', container: 'cfsmcp2-cfsmcp2-1', label: 'cfsmcp2', server: 'cfsmcp2', url: 'http://127.0.0.1:8559/mcp/' },
   // Native MCP servers: no container, so only the session link and the probe.
   // The ingested documents only: cognee also writes a query cache and
   // session-QA vectors, and counting those would report every recall as an update.
-  { group: 'MCP servers', container: null, label: 'cognee', server: 'cognee', url: 'http://127.0.0.1:8000/mcp', dataPaths: ['~/.cognee/data'] },
-  { group: 'MCP servers', container: null, label: 'openviking', server: 'openviking', url: 'http://127.0.0.1:1933/mcp', dataPaths: ['~/.openviking/data/viking'] },
+  { group: 'Серверы', container: null, label: 'cognee', server: 'cognee', url: 'http://127.0.0.1:8000/mcp', dataPaths: ['~/.cognee/data'] },
+  { group: 'Серверы', container: null, label: 'openviking', server: 'openviking', url: 'http://127.0.0.1:1933/mcp', dataPaths: ['~/.openviking/data/viking'] },
   { group: 'ohimymind', container: 'ohimymind-api-1', label: 'ohimymind-api-1', server: null, url: '' },
   { group: 'ohimymind', container: 'ohimymind-worker-1', label: 'ohimymind-worker-1', server: null, url: '' },
   { group: 'ohimymind', container: 'ohimymind-embedder-1', label: 'ohimymind-embedder-1', server: null, url: '' },
@@ -139,7 +139,7 @@ function normalizeTargets(value) {
     if (container === '' && server === null) continue;
     const identity = container === '' ? null : container;
     const label = typeof item.label === 'string' && item.label.trim() !== '' ? item.label.trim() : (server ?? identity);
-    const group = typeof item.group === 'string' && item.group.trim() !== '' ? item.group.trim() : (server === null ? 'containers' : 'MCP servers');
+    const group = typeof item.group === 'string' && item.group.trim() !== '' ? item.group.trim() : (server === null ? 'Контейнеры' : 'Серверы');
     const url = typeof item.url === 'string' ? item.url.trim() : '';
     const dataPaths = (Array.isArray(item.dataPaths) ? item.dataPaths : [])
       .filter((entry) => typeof entry === 'string' && entry.trim() !== '')

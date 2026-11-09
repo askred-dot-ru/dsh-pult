@@ -126,8 +126,29 @@ window.__ModuleLoader__.load({
       return `group-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
     }
 
+    /**
+     * The five areas the column is made of, each one a switch in the shared
+     * settings: off means the section is not drawn at all, and for cfsmcp2 that also
+     * means nothing is read from it.
+     */
+    const SECTION_LIST = [
+      { key: 'cfsmcp2', label: 'Каталог cfsmcp2', hint: 'контексты, индексация, теги' },
+      { key: 'lmstudio', label: 'LM Studio', hint: 'загруженные эмбеддинги' },
+      { key: 'mcp', label: 'Серверы и контейнеры', hint: 'состояние и управление' },
+      { key: 'ohymynd', label: 'Oh!MyMind', hint: 'контейнеры ohimymind' },
+      { key: 'sessions', label: 'Сессии', hint: 'список, теги, архив, выгрузка' },
+    ];
+
+    /** The reader's on/off state per section; anything unset is on. */
+    function readSections(raw) {
+      const source = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+      const out = {};
+      for (const section of SECTION_LIST) out[section.key] = source[section.key] !== false;
+      return out;
+    }
+
     /** The shipped state: everything open, nothing folded, nothing pinned, no comments, no tags. */
-    const UI_DEFAULT = { catalogue: false, sessions: false, models: false, groups: [], buckets: [], pins: [], archived: [], useCfsmcp2: true, notes: {}, tagGroups: [{ ...DEFAULT_GROUP }], tags: [], sessionTags: {}, filters: { text: '', contexts: [], mine: [] }, newSessionTags: [], pendingNewSession: null, seenDone: {}, turns: {} };
+    const UI_DEFAULT = { catalogue: false, sessions: false, models: false, groups: [], buckets: [], pins: [], archived: [], useCfsmcp2: true, sections: readSections(null), notes: {}, tagGroups: [{ ...DEFAULT_GROUP }], tags: [], sessionTags: {}, filters: { text: '', contexts: [], mine: [] }, newSessionTags: [], pendingNewSession: null, seenDone: {}, turns: {} };
 
     /**
      * A filter as the store keeps it: a search line and two lists of chosen names.
@@ -281,6 +302,7 @@ window.__ModuleLoader__.load({
           pins: Array.isArray(parsed.pins) ? parsed.pins.filter((item) => typeof item === 'string') : [],
           archived: Array.isArray(parsed.archived) ? parsed.archived.filter((item) => typeof item === 'string') : [],
           useCfsmcp2: parsed.useCfsmcp2 !== false,
+          sections: readSections(parsed.sections),
           notes: parsed.notes !== null && typeof parsed.notes === 'object' && !Array.isArray(parsed.notes)
             ? Object.fromEntries(Object.entries(parsed.notes).filter(([, text]) => typeof text === 'string' && text !== ''))
             : {},
@@ -1885,7 +1907,11 @@ window.__ModuleLoader__.load({
       const visible = props.visible !== false;
       // The reader's switch: off means the list never asks cfsmcp2 anything — no
       // catalogue request, no tag names, no colours, so no dots and no chips either.
-      const useCfsmcp2 = readUi().useCfsmcp2 !== false;
+      const sectionsNow = readSections(readUi().sections);
+      // Two switches say the same thing: the area's own switch on the page, and the
+      // «применять cfsmcp2» tick in the tag settings. Either one off means the list
+      // reads nothing from cfsmcp2.
+      const useCfsmcp2 = sectionsNow.cfsmcp2 !== false && readUi().useCfsmcp2 !== false;
       // A caller that already holds the catalogue passes it; otherwise fetch one.
       const { state } = useCatalogue(given === null && visible && useCfsmcp2);
       const fetched = state.data !== null && state.data !== undefined ? state.data : null;
@@ -3499,8 +3525,8 @@ window.__ModuleLoader__.load({
     const TAB_ID = '@local/mcp-docker-status';
     /** The page kind the guide entry opens. */
     const TAB_KIND = 'mcp-docker-status';
-    const TAB_TITLE = 'MCP servers';
-    const TAB_DESCRIPTION = 'Container state and controls for the local MCP servers';
+    const TAB_TITLE = 'Пульт';
+    const TAB_DESCRIPTION = 'Пульт: каталог cfsmcp2, модели LM Studio, серверы и контейнеры, список сессий';
     /** The seat this page declares at its top, for another bundle to fill. */
     const TOP_SEAT = 'mcp-docker-status.top';
     /** The seat between the catalogue and the container rows: the loaded models. */
@@ -3535,6 +3561,22 @@ window.__ModuleLoader__.load({
       warn: 'var(--dsw-alias-state-warn-primary)',
       bad: 'var(--dsw-alias-state-error-primary)',
       idle: 'var(--dsw-alias-state-idle-primary)',
+    };
+
+    /** The shared settings card: one row per area, its switch and its hint. */
+    const SECTIONS = {
+      panelSettings: {
+        display: 'flex', flexDirection: 'column', gap: 2,
+        margin: '0 0 6px', padding: '6px 8px',
+        border: '0.5px solid var(--dsw-alias-border-l1)', borderRadius: 'var(--dsw-radius-sm, 6px)',
+        background: 'var(--dsw-alias-bg-layer-2)',
+      },
+      sectionRow: {
+        display: 'flex', alignItems: 'center', gap: 6, padding: '1px 2px',
+        color: 'var(--dsw-alias-label-primary)', fontSize: 11, cursor: 'pointer',
+      },
+      sectionLabel: { flex: 'none', fontWeight: 600 },
+      sectionHint: { flex: 'auto', minWidth: 0, color: 'var(--dsw-alias-label-tertiary)', fontSize: 10, textAlign: 'right' },
     };
 
     /** Docker tone: healthy > running > down > absent. */
@@ -3657,7 +3699,7 @@ window.__ModuleLoader__.load({
 
     /** A group name that still reads when an older Host payload omits it. */
     function rowGroup(target) {
-      return typeof target.group === 'string' && target.group !== '' ? target.group : 'containers';
+      return typeof target.group === 'string' && target.group !== '' ? target.group : 'Контейнеры';
     }
 
     /** Glyphs drawn inline: the plugin imports no artwork package. */
@@ -3688,6 +3730,10 @@ window.__ModuleLoader__.load({
         padding: '6px 12px', borderBottom: '0.5px solid var(--dsw-alias-border-l1)',
       },
       headerText: { minWidth: 0, flex: 'auto', display: 'flex', flexDirection: 'column', gap: 1 },
+      /** The title line of the column: the mark, then the product name. */
+      titleRow: { display: 'flex', alignItems: 'center', gap: 6 },
+      mark: { flex: 'none', color: 'var(--dsw-alias-state-business-primary)' },
+      titleText: { flex: 'none', fontSize: 13, fontWeight: 600, letterSpacing: '0.01em' },
       title: { color: 'var(--dsw-alias-label-primary)', fontSize: 12, fontWeight: 600 },
       summary: { color: 'var(--dsw-alias-label-secondary)', fontSize: 11 },
       sub: (tone) => ({
@@ -3818,6 +3864,15 @@ window.__ModuleLoader__.load({
       const laterTimer = React.useRef(null);
       const alive = React.useRef(true);
       const [hover, setHover] = React.useState(null);
+      // The shared settings: five areas, each switchable; the panel keeps them in the
+      // same store as the rest, so a switched-off area stays off across reloads.
+      const panelUi = useUiStore();
+      const sections = readSections(panelUi.sections);
+      const [settingsOpen, setSettingsOpen] = React.useState(false);
+      const toggleSection = (key) => {
+        const next = { ...readSections(uiStore.value.sections), [key]: readSections(uiStore.value.sections)[key] === false };
+        uiStore.set({ ...uiStore.value, sections: next });
+      };
       // Which group headings the reader closed, by their text. A reading aid, so it
       // lives with the panel rather than in a setting.
       const [collapsed, setCollapsed] = usePanelSet('groups');
@@ -3843,7 +3898,13 @@ window.__ModuleLoader__.load({
 
       const data = state.data;
       const summary = data !== null && data !== undefined && data.summary !== undefined ? data.summary : null;
-      const targets = data !== null && data !== undefined && Array.isArray(data.targets) ? data.targets : [];
+      const allTargets = data !== null && data !== undefined && Array.isArray(data.targets) ? data.targets : [];
+      // The Oh!MyMind switch owns the rows of its own container group: turning the
+      // area off takes its four rows out of the MCP list with it.
+      const ohymyndOn = readSections(uiStore.value.sections).ohymynd !== false;
+      const targets = ohymyndOn
+        ? allTargets
+        : allTargets.filter((target) => String(target?.group ?? '').toLowerCase() !== 'ohimymind');
       const actionsEnabled = data === null || data === undefined || data.actions !== false;
       // One press acts. Only a Host that sets confirmActions asks for a second.
       const confirmRequired = data !== null && data !== undefined && data.confirm === true;
@@ -4053,7 +4114,25 @@ window.__ModuleLoader__.load({
         h('style', { key: 'style', dangerouslySetInnerHTML: { __html: CSS } }),
         h('div', { style: S.header },
           h('div', { style: S.headerText },
-            h('div', { style: S.title }, TAB_TITLE),
+            h('div', { style: S.titleRow }, [
+              // The mark of the column: the same glyph as icon.svg, inlined so it
+              // takes the header's colour instead of a file's.
+              h('svg', {
+                key: 'mark',
+                width: 15, height: 15, viewBox: '0 0 16 16', fill: 'none',
+                'aria-hidden': true, style: S.mark,
+              }, [
+                h('rect', {
+                  key: 'frame', x: 1.5, y: 1.5, width: 13, height: 13, rx: 2.5,
+                  stroke: 'currentColor', strokeWidth: 1.3,
+                }),
+                h('path', {
+                  key: 'bars', d: 'M4 5.2h8M4 8h5.5M4 10.8h8',
+                  stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round',
+                }),
+              ]),
+              h('span', { key: 'name', style: S.titleText }, TAB_TITLE),
+            ]),
             h('div', { style: S.summary }, headline),
             h('div', { style: S.sub(subtitleTone), title: subtitle }, subtitle),
           ),
@@ -4061,19 +4140,54 @@ window.__ModuleLoader__.load({
             type: 'button', style: S.refresh, title: `Refresh now — ${subtitle}`,
             'aria-label': 'Refresh now', onClick: () => refresh(),
           }, '⟳'),
+          // One settings button for the whole column: the five areas are switched
+          // here, and a switched-off area is not drawn at all.
+          h('button', {
+            type: 'button',
+            style: { ...S.refresh, marginLeft: 4 },
+            title: settingsOpen ? 'Скрыть настройки панели' : 'Настройки панели: какие секции показывать',
+            'aria-label': 'Настройки панели',
+            'aria-expanded': settingsOpen ? 'true' : 'false',
+            'data-panel-settings': 'true',
+            onClick: () => setSettingsOpen((previous) => !previous),
+          }, '⚙'),
         ),
+        settingsOpen
+          ? h('div', { key: 'panel-settings', style: SECTIONS.panelSettings, 'data-sections-settings': 'true' },
+            SECTION_LIST.map((section) => {
+              const absent = section.absent === true;
+              const on = sections[section.key] !== false && !absent;
+              return h('label', {
+                key: section.key,
+                style: absent ? { ...SECTIONS.sectionRow, opacity: 0.55, cursor: 'default' } : SECTIONS.sectionRow,
+                'data-section-switch': section.key,
+                title: section.hint,
+              }, [
+                h('input', {
+                  key: 'box',
+                  type: 'checkbox',
+                  checked: on,
+                  disabled: absent,
+                  'data-section-switch-check': section.key,
+                  onChange: () => toggleSection(section.key),
+                }),
+                h('span', { key: 'label', style: SECTIONS.sectionLabel }, section.label),
+                h('span', { key: 'hint', style: SECTIONS.sectionHint }, absent ? 'скоро' : section.hint),
+              ]);
+            }))
+          : null,
         // The declared seat: whatever another bundle contributes sits here, above
         // every container row but below this page's own title.
-        typeof renderSlot === 'function' ? renderSlot(TOP_SEAT, { visible }) : null,
+        sections.cfsmcp2 && typeof renderSlot === 'function' ? renderSlot(TOP_SEAT, { visible }) : null,
         // Between the catalogue and the rows: the models LM Studio has loaded.
-        typeof renderSlot === 'function' ? renderSlot(MIDDLE_SEAT, { visible }) : null,
-        h('div', { style: S.list }, targets.length === 0
+        sections.lmstudio && typeof renderSlot === 'function' ? renderSlot(MIDDLE_SEAT, { visible }) : null,
+        sections.mcp === false ? null : h('div', { style: S.list }, targets.length === 0
           ? h('div', { style: S.empty }, state.phase === 'error' ? 'No data from the host.' : 'No targets configured.')
           : nodes),
         // The seat under the rows sits at the foot of the page: the rows keep their
         // own height and the leftover space collects between them, so the session
         // list is where the eye ends up instead of floating after the last row.
-        typeof renderSlot === 'function'
+        sections.sessions && typeof renderSlot === 'function'
           ? h('div', { key: 'bottom', style: S.bottomSeat }, renderSlot(BOTTOM_SEAT, { visible }))
           : null,
         bubble,
@@ -4092,8 +4206,8 @@ window.__ModuleLoader__.load({
     // means a Session that remembered the pre-merge page lands on this one.
     const TAB_ID = '@local/mcp-docker-status';
     const TAB_KIND = 'mcp-docker-status';
-    const TAB_TITLE = 'MCP';
-    const TAB_DESCRIPTION = 'cfsmcp2 contexts, the LM Studio models, MCP servers and the Harness session list';
+    const TAB_TITLE = 'Пульт';
+    const TAB_DESCRIPTION = 'Пульт: каталог cfsmcp2, модели LM Studio, серверы и список сессий';
     // The names the page body renders its seats under (kept as they were, so a
     // bundle that filled them before still would).
     const TOP_SEAT = 'mcp-docker-status.top';
